@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#30576E">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Tidrapport">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>Tidrapport &amp; utlägg</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="styles.css">
+<script src="vendor/jszip.min.js" defer></script>
+<script src="vendor/jspdf.umd.min.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<header class="top">
+  <div class="topin">
+    <div class="brand"><b>Tidrapport &amp; utlägg</b><span id="who"></span></div>
+    <div class="monthnav" id="monthnav">
+      <button class="iconbtn" id="prev" type="button" aria-label="Föregående månad">‹</button>
+      <b id="monthLabel"></b>
+      <button class="iconbtn" id="next" type="button" aria-label="Nästa månad">›</button>
+    </div>
+    <button class="btn small" id="settingsBtn" type="button">Inställningar</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <noscript><p class="banner">Appen behöver JavaScript för att fungera.</p></noscript>
+  <p class="banner" id="banner" hidden></p>
+
+  <!-- ENGÅNGSINSTÄLLNING -->
+  <section id="view-setup" hidden>
+    <div class="card narrow">
+      <h1>Välkommen</h1>
+      <p class="lead">Fyll i dina uppgifter en gång. De sparas bara i den här enheten och används på tidrapporten och när du skickar den.</p>
+      <form id="setupForm" autocomplete="on" novalidate>
+        <div class="stack">
+          <label>Ditt namn<input type="text" id="su-name" name="name" maxlength="80" autocomplete="name" required></label>
+          <label>Anställningsnummer (valfritt)<input type="text" id="su-emp" maxlength="30"></label>
+          <label>Närmsta chefs e-post (attesterare)<input type="email" id="su-chef" maxlength="254" inputmode="email" required></label>
+          <div id="su-lon" class="stack" hidden>
+            <label>Lönekontorets e-post för tidrapporter<input type="email" id="su-lontid" maxlength="254" inputmode="email"></label>
+            <label>Lönekontorets e-post för lönefrågor och utlägg<input type="email" id="su-lonfr" maxlength="254" inputmode="email"></label>
+          </div>
+        </div>
+        <p class="formerr" id="setupErr" hidden></p>
+        <button class="btn primary" type="submit">Kom igång</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- MIN MÅNAD -->
+  <section id="view-main" hidden>
+    <div class="grid">
+      <div class="card" id="formCard">
+        <h2 id="formTitle">Registrera</h2>
+        <div class="seg" id="seg" role="group" aria-label="Typ av registrering">
+          <button type="button" data-type="work" aria-pressed="true">Arbete</button>
+          <button type="button" data-type="travel" aria-pressed="false">Resa</button>
+          <button type="button" data-type="expense" aria-pressed="false">Utlägg</button>
+          <button type="button" data-type="absence" aria-pressed="false">Frånvaro</button>
+        </div>
+        <form id="entryForm" autocomplete="off" novalidate>
+          <div class="row"><label>Datum<input type="date" id="f-date" required></label></div>
+
+          <div data-for="work">
+            <div class="row">
+              <label>Start<input type="time" id="f-start" value="08:00"></label>
+              <label>Slut<input type="time" id="f-end" value="17:00"></label>
+              <label>Rast (min)<input type="number" id="f-break" min="0" max="600" step="5" value="60" inputmode="numeric"></label>
+            </div>
+            <p class="calc">Arbetad tid: <b id="workCalc" class="num"></b></p>
+          </div>
+
+          <div data-for="travel" hidden>
+            <div class="row">
+              <label>Restid (timmar)<input type="text" id="f-thours" inputmode="decimal" placeholder="t.ex. 1,5" maxlength="6"></label>
+              <label>Körda km<input type="text" id="f-km" inputmode="decimal" placeholder="0" maxlength="7"></label>
+            </div>
+            <div class="row">
+              <label>Fordon<select id="f-vehicle">
+                <option value="own">Egen bil</option>
+                <option value="benefit">Förmånsbil (bensin/diesel/laddhybrid)</option>
+                <option value="benefit_el">Förmånsbil (el)</option>
+                <option value="none">Ingen bil (tåg, flyg m.m.)</option>
+              </select></label>
+            </div>
+            <p class="calc">Milersättning: <b id="mileCalc" class="num"></b></p>
+          </div>
+
+          <div data-for="expense" hidden>
+            <div class="row">
+              <label>Belopp inkl. moms (kr)<input type="text" id="f-amount" inputmode="decimal" placeholder="0,00" maxlength="10"></label>
+              <label>Moms<select id="f-vatrate">
+                <option value="25">25 %</option><option value="12">12 %</option><option value="6">6 %</option><option value="0">0 % / utländsk</option>
+              </select></label>
+            </div>
+            <div class="row">
+              <label>Kategori<select id="f-cat"></select></label>
+              <label>Betalat med<select id="f-pay">
+                <option value="private">Privat kort/kontant (ersätts)</option>
+                <option value="company">Företagskort (kvittoredovisning)</option>
+              </select></label>
+            </div>
+            <p class="calc">Varav moms: <b id="vatCalc" class="num"></b></p>
+            <div class="receipt-pick">
+              <span class="btn small filebtn">Ta foto<input type="file" id="f-photo" accept="image/*" capture="environment" aria-label="Ta foto av kvitto"></span>
+              <span class="btn small filebtn">Välj bild eller PDF<input type="file" id="f-file" accept="image/*,application/pdf" aria-label="Välj kvittofil"></span>
+              <img id="receiptPreview" alt="Förhandsvisning av kvitto" hidden>
+              <button type="button" class="btn small danger" id="receiptClear" hidden>Ta bort kvitto</button>
+              <span class="hint" id="receiptNote">Inget kvitto valt</span>
+            </div>
+          </div>
+
+          <div data-for="absence" hidden>
+            <div class="row">
+              <label>Typ<select id="f-kind"></select></label>
+              <label>Timmar<input type="text" id="f-ahours" inputmode="decimal" value="8" maxlength="5"></label>
+            </div>
+          </div>
+
+          <div class="row"><label>Beskrivning / projekt<input type="text" id="f-desc" maxlength="160"></label></div>
+
+          <div class="actions">
+            <button class="btn primary" type="submit" id="saveBtn">Spara</button>
+            <button class="btn" type="button" id="cancelEdit" hidden>Avbryt</button>
+            <button class="btn danger" type="button" id="deleteBtn" hidden>Ta bort</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="col">
+        <div class="tiles" id="tiles"></div>
+
+        <div class="sendbox card">
+          <h2>Skicka in</h2>
+          <div class="sendrow">
+            <div>
+              <button class="btn primary" type="button" id="sendChef">Skicka tidrapport chef</button>
+              <span class="sendstatus" id="statusChef"></span>
+            </div>
+            <div>
+              <button class="btn primary" type="button" id="sendLon">Skicka tidrapport Lönekontor</button>
+              <span class="sendstatus" id="statusLon"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Registreringar</h2>
+          <div class="days" id="days"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- INSTÄLLNINGAR -->
+  <section id="view-settings" hidden>
+    <div class="settings-grid">
+      <div class="card">
+        <h2>Mina uppgifter</h2>
+        <form id="profileForm" novalidate>
+          <div class="stack">
+            <label>Namn<input type="text" id="p-name" maxlength="80" autocomplete="name" required></label>
+            <label>Anställningsnummer (valfritt)<input type="text" id="p-emp" maxlength="30"></label>
+            <label>Närmsta chefs e-post (attesterare)<input type="email" id="p-chef" maxlength="254" inputmode="email" required></label>
+            <label>Lönekontor, tidrapporter<input type="email" id="p-lontid" maxlength="254" inputmode="email"></label>
+            <label>Lönekontor, lönefrågor och utlägg<input type="email" id="p-lonfr" maxlength="254" inputmode="email"></label>
+            <p class="hint" id="lonHint" hidden>Lönekontorets adresser hanteras av administratören.</p>
+          </div>
+          <p class="formerr" id="profileErr" hidden></p>
+          <div class="actions">
+            <button class="btn primary" type="submit">Spara</button>
+            <button class="btn" type="button" id="backBtn">Tillbaka</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Säkerhetskopia</h2>
+        <p class="hint">Uppgifterna finns bara i den här enheten. Spara en säkerhetskopia ibland, eller använd den för att flytta registreringar mellan mobil och dator. Inläsning slår ihop med det som redan finns.</p>
+        <div class="actions">
+          <button class="btn" type="button" id="backupBtn">Spara säkerhetskopia</button>
+          <span class="btn filebtn">Läs in säkerhetskopia<input type="file" id="restoreFile" accept="application/json,.json" aria-label="Välj säkerhetskopia"></span>
+        </div>
+
+        <h2 class="mt">Installera</h2>
+        <p class="hint">iPhone: tryck på Dela och välj ”Lägg till på hemskärmen”. Android och dator: välj ”Installera app” i webbläsarens meny.</p>
+        <button class="btn" type="button" id="installBtn" hidden>Installera appen</button>
+
+        <h2 class="mt">Rensa</h2>
+        <p class="hint">Tar bort alla registreringar, kvitton och dina uppgifter från den här enheten.</p>
+        <button class="btn danger" type="button" id="wipeBtn">Radera all data</button>
+        <p class="hint mt" id="versionInfo"></p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog id="sendDialog" aria-labelledby="sdTitle">
+  <h2 id="sdTitle"></h2>
+  <dl class="sendmeta">
+    <dt>Till</dt><dd id="sdTo"></dd>
+    <dt>Ämne</dt><dd id="sdSubject"></dd>
+    <dt>Bilagor</dt><dd id="sdFiles"></dd>
+  </dl>
+  <p class="hint" id="sdWarn" hidden></p>
+  <div class="sendopts" id="sdOpts"></div>
+  <p class="hint" id="sdHelp"></p>
+  <div class="actions end"><button class="btn" type="button" id="sdClose">Stäng</button></div>
+</dialog>
+
+<dialog id="imgDialog" aria-label="Kvitto">
+  <img id="imgDialogImg" alt="Kvitto">
+  <div class="actions end"><button class="btn small" type="button" id="imgClose">Stäng</button></div>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
