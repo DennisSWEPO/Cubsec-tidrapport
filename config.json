@@ -1,7 +1,7 @@
 {
   "foretag": "Cubsec AB",
-  "lonekontorTidrapport": "",
-  "lonekontorLonefragor": "",
+  "lonekontor": "",
+  "kvittoredovisning": "",
   "milersattning": {
     "egenBil": 25,
     "formansbil": 12,

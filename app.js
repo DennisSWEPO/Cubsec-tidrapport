@@ -3,7 +3,7 @@
    Appen gör inga nätverksanrop utöver att läsa sina egna filer (config.json, mallen). */
 "use strict";
 (() => {
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.2.0";
 const MONTHS = ["Januari","Februari","Mars","April","Maj","Juni","Juli","Augusti","September","Oktober","November","December"];
 const TYPES = ["work","travel","expense","absence"];
 const TYPE_LABEL = {work:"Arbete", travel:"Resa", expense:"Utlägg", absence:"Frånvaro"};
@@ -13,13 +13,13 @@ const CATS = ["Måltid","Representation","Hotell/logi","Tåg/flyg/taxi","Parkeri
 const KINDS = ["Semester","Sjukdom","VAB","Föräldraledighet","Tjänstledighet","Kompledighet","Övrigt"];
 const VAT_RATES = [25,12,6,0];
 const PAYMENTS = ["private","company"];
-const DEFAULT_CFG = {foretag:"", lonekontorTidrapport:"", lonekontorLonefragor:"", rateOwn:25, rateBenefit:12, rateBenefitEl:9.5};
+const DEFAULT_CFG = {foretag:"", lonekontor:"", kvittoredovisning:"", rateOwn:25, rateBenefit:12, rateBenefitEl:9.5};
 const MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
 const MAX_BACKUP_BYTES = 200 * 1024 * 1024;
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 const $ = (id) => document.getElementById(id);
-const S = {cfg:{...DEFAULT_CFG}, cfgLon:false, profile:null, ym:null, items:[], months:{}, type:"work",
+const S = {cfg:{...DEFAULT_CFG}, profile:null, kFrom:"", kTo:"", ym:null, items:[], months:{}, type:"work",
   editId:null, editItem:null, receipt:undefined, previewUrl:null, installEvt:null};
 
 /* ---------- små hjälpfunktioner ---------- */
@@ -33,6 +33,7 @@ const parseNum = (v) => { const n = parseFloat(String(v ?? "").replace(/\s/g, ""
 const r2 = (n) => Math.round(n * 100) / 100;
 const fmtN = (n, d = 2) => (Math.round(n * 10**d) / 10**d).toLocaleString("sv-SE", {maximumFractionDigits:d});
 const fmtH = (n) => fmtN(n) + " h";
+const fmtAmt = (n) => n.toLocaleString("sv-SE", {minimumFractionDigits:2, maximumFractionDigits:2});
 const fmtKr = (n) => n.toLocaleString("sv-SE", {minimumFractionDigits:2, maximumFractionDigits:2}) + " kr";
 const fmtDate = (ts) => new Date(ts).toLocaleDateString("sv-SE", {day:"numeric", month:"short"}).replace(/\.$/, "");
 const weekday = (ds) => new Date(ds + "T12:00:00").toLocaleDateString("sv-SE", {weekday:"short"});
@@ -70,16 +71,18 @@ function workHours(start, end, brk){
 }
 function rateFor(v){ return v === "own" ? S.cfg.rateOwn : v === "benefit" ? S.cfg.rateBenefit : v === "benefit_el" ? S.cfg.rateBenefitEl : 0; }
 function totals(items){
-  const t = {work:0, travel:0, absence:0, expPrivate:0, expCompany:0, vat:0, km:0, mileAmt:0, absByKind:{}};
+  const t = {work:0, travel:0, absence:0, expPrivate:0, expCompany:0, vatPrivate:0, km:0, mileAmt:0, absByKind:{}};
   for (const it of items) {
     if (it.type === "work") t.work += it.hours;
     else if (it.type === "travel") { t.travel += it.travelHours; t.km += it.km; t.mileAmt += it.km / 10 * rateFor(it.vehicle); }
     else if (it.type === "absence") { t.absence += it.hours; t.absByKind[it.kind] = (t.absByKind[it.kind] || 0) + it.hours; }
-    else if (it.type === "expense") { if (it.payment === "company") t.expCompany += it.amount; else t.expPrivate += it.amount; t.vat += it.vat; }
+    else if (it.type === "expense") { if (it.payment === "company") t.expCompany += it.amount; else { t.expPrivate += it.amount; t.vatPrivate += it.vat; } }
   }
-  for (const k of ["work","travel","absence","expPrivate","expCompany","vat","km","mileAmt"]) t[k] = r2(t[k]);
+  for (const k of ["work","travel","absence","expPrivate","expCompany","vatPrivate","km","mileAmt"]) t[k] = r2(t[k]);
   return t;
 }
+const isPrivateExpense = (i) => i.type === "expense" && i.payment !== "company";
+const XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const sortItems = (arr) => arr.slice().sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : (a.createdAt - b.createdAt));
 
 /* ---------- validering (används för allt som sparas och allt som läses in) ---------- */
@@ -116,7 +119,7 @@ function sanitizeItem(raw){
 function sanitizeProfile(raw){
   raw = raw && typeof raw === "object" ? raw : {};
   const mail = (v) => { const s = clean(v, 254).toLowerCase(); return isEmail(s) ? s : ""; };
-  return {name: clean(raw.name, 80), empNo: clean(raw.empNo, 30), chefMail: mail(raw.chefMail), lonTid: mail(raw.lonTid), lonFragor: mail(raw.lonFragor)};
+  return {name: clean(raw.name, 80), empNo: clean(raw.empNo, 30), chefMail: mail(raw.chefMail), lonTid: mail(raw.lonTid), kvitto: mail(raw.kvitto ?? raw.lonFragor)};
 }
 async function sniff(blob){
   const b = new Uint8Array(await blob.slice(0, 5).arrayBuffer());
@@ -167,7 +170,8 @@ async function init(){
   try { await DB.open(); }
   catch (e) { showBanner("Kunde inte öppna den lokala lagringen. Privat surfläge stöds inte – öppna appen i ett vanligt fönster."); return; }
   await loadConfig();
-  S.profile = (await DB.get("meta", "profile"))?.value || null;
+  const stored = (await DB.get("meta", "profile"))?.value;
+  S.profile = stored ? sanitizeProfile(stored) : null; // gamla profiler (lonFragor) flyttas till kvitto
   S.ym = ymOf(todayStr());
   registerSW();
   if (!profileComplete()) showSetup(); else showMain();
@@ -180,13 +184,12 @@ async function loadConfig(){
   const ms = raw && typeof raw.milersattning === "object" ? raw.milersattning : {};
   const rate = (v, d) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 100 ? n : d; };
   const mail = (v) => { const s = clean(v, 254).toLowerCase(); return isEmail(s) ? s : ""; };
-  S.cfg = {foretag: clean(raw.foretag, 80), lonekontorTidrapport: mail(raw.lonekontorTidrapport), lonekontorLonefragor: mail(raw.lonekontorLonefragor),
+  S.cfg = {foretag: clean(raw.foretag, 80), lonekontor: mail(raw.lonekontor ?? raw.lonekontorTidrapport), kvittoredovisning: mail(raw.kvittoredovisning ?? raw.lonekontorLonefragor),
     rateOwn: rate(ms.egenBil, 25), rateBenefit: rate(ms.formansbil, 12), rateBenefitEl: rate(ms.formansbilEl, 9.5)};
-  S.cfgLon = !!(S.cfg.lonekontorTidrapport || S.cfg.lonekontorLonefragor);
 }
-const lonTid = () => S.cfg.lonekontorTidrapport || S.profile?.lonTid || "";
-const lonFragor = () => S.cfg.lonekontorLonefragor || S.profile?.lonFragor || "";
-const profileComplete = () => !!(S.profile && S.profile.name && isEmail(S.profile.chefMail) && (lonTid() || lonFragor()));
+const lonMail = () => S.cfg.lonekontor || S.profile?.lonTid || "";
+const kvittoMail = () => S.cfg.kvittoredovisning || S.profile?.kvitto || "";
+const profileComplete = () => !!(S.profile && S.profile.name && isEmail(S.profile.chefMail) && lonMail() && kvittoMail());
 
 function registerSW(){
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
@@ -203,12 +206,12 @@ function showView(v){
 function showSetup(){
   const p = S.profile || {};
   $("su-name").value = p.name || ""; $("su-emp").value = p.empNo || ""; $("su-chef").value = p.chefMail || "";
-  $("su-lon").hidden = S.cfgLon;
-  $("su-lontid").value = p.lonTid || ""; $("su-lonfr").value = p.lonFragor || "";
+  $("su-lontid-wrap").hidden = !!S.cfg.lonekontor; $("su-kvitto-wrap").hidden = !!S.cfg.kvittoredovisning;
+  $("su-lontid").value = p.lonTid || ""; $("su-kvitto").value = p.kvitto || "";
   $("who").textContent = S.cfg.foretag;
   showView("setup");
 }
-function showMain(){ renderWho(); renderMonthLabel(); resetForm(); showView("main"); loadMonth(); }
+function showMain(){ renderWho(); renderMonthLabel(); resetForm(); setKvittoPeriod(S.ym); showView("main"); loadMonth(); }
 function renderWho(){ $("who").textContent = [S.profile?.name, S.cfg.foretag].filter(Boolean).join(" · "); }
 
 /* ---------- händelser ---------- */
@@ -226,6 +229,8 @@ function bindUI(){
   $("days").addEventListener("click", onDaysClick);
   $("days").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("entry")) { e.preventDefault(); onDaysClick(e); } });
   $("sendChef").onclick = () => openSend("chef"); $("sendLon").onclick = () => openSend("lon");
+  $("sendKvitto").onclick = openKvittoSend;
+  ["k-from","k-to"].forEach((id) => $(id).addEventListener("change", () => { S.kFrom = $("k-from").value; S.kTo = $("k-to").value; renderKvitto(); }));
   $("sdClose").onclick = () => $("sendDialog").close();
   $("imgClose").onclick = () => $("imgDialog").close();
   $("imgDialog").addEventListener("close", () => { const i = $("imgDialogImg"); if (i.src.startsWith("blob:")) URL.revokeObjectURL(i.src); i.removeAttribute("src"); });
@@ -238,15 +243,13 @@ function bindUI(){
 async function saveProfileFrom(prefix, errId, first){
   const g = (id) => $(prefix + "-" + id);
   const raw = {name: g("name").value, empNo: g("emp").value, chefMail: g("chef").value,
-    lonTid: S.cfgLon ? (S.profile?.lonTid || "") : g("lontid").value, lonFragor: S.cfgLon ? (S.profile?.lonFragor || "") : g("lonfr").value};
+    lonTid: S.cfg.lonekontor ? (S.profile?.lonTid || "") : g("lontid").value,
+    kvitto: S.cfg.kvittoredovisning ? (S.profile?.kvitto || "") : g("kvitto").value};
   const err = [];
   if (!clean(raw.name, 80)) err.push("Fyll i ditt namn.");
   if (!isEmail(clean(raw.chefMail, 254).toLowerCase())) err.push("Fyll i chefens e-postadress, t.ex. namn@foretag.se.");
-  if (!S.cfgLon) {
-    for (const [v, label] of [[raw.lonTid, "tidrapporter"], [raw.lonFragor, "lönefrågor"]])
-      if (clean(v, 254) && !isEmail(clean(v, 254).toLowerCase())) err.push(`E-postadressen för ${label} ser inte rätt ut.`);
-    if (!clean(raw.lonTid, 254) && !clean(raw.lonFragor, 254)) err.push("Fyll i minst en e-postadress till lönekontoret.");
-  }
+  if (!S.cfg.lonekontor && !isEmail(clean(raw.lonTid, 254).toLowerCase())) err.push("Fyll i lönekontorets e-postadress för utlägg.");
+  if (!S.cfg.kvittoredovisning && !isEmail(clean(raw.kvitto, 254).toLowerCase())) err.push("Fyll i e-postadressen för kvittoredovisning.");
   const e = $(errId); e.textContent = err.join(" "); e.hidden = !err.length;
   if (err.length) return;
   S.profile = sanitizeProfile(raw);
@@ -259,14 +262,15 @@ async function saveProfileFrom(prefix, errId, first){
 function openSettings(){
   const p = S.profile || {};
   $("p-name").value = p.name || ""; $("p-emp").value = p.empNo || ""; $("p-chef").value = p.chefMail || "";
-  $("p-lontid").value = lonTid(); $("p-lonfr").value = lonFragor();
-  $("p-lontid").readOnly = $("p-lonfr").readOnly = S.cfgLon; $("lonHint").hidden = !S.cfgLon;
+  $("p-lontid").value = lonMail(); $("p-kvitto").value = kvittoMail();
+  $("p-lontid").readOnly = !!S.cfg.lonekontor; $("p-kvitto").readOnly = !!S.cfg.kvittoredovisning;
+  $("lonHint").hidden = !(S.cfg.lonekontor || S.cfg.kvittoredovisning);
   $("profileErr").hidden = true; delete $("wipeBtn").dataset.armed; $("wipeBtn").textContent = "Radera all data";
   showView("settings");
 }
 
 /* ---------- månad ---------- */
-function changeMonth(d){ S.ym = shiftYm(S.ym, d); renderMonthLabel(); resetForm(); loadMonth(); }
+function changeMonth(d){ S.ym = shiftYm(S.ym, d); renderMonthLabel(); resetForm(); setKvittoPeriod(S.ym); loadMonth(); }
 function renderMonthLabel(){ $("monthLabel").textContent = ymLabel(S.ym); }
 async function loadMonth(){
   const ym = S.ym;
@@ -274,7 +278,7 @@ async function loadMonth(){
   if (ym !== S.ym) return;
   S.items = items.map(sanitizeItem).filter(Boolean);
   S.months[ym] = meta?.value || {};
-  render();
+  render(); renderKvitto();
 }
 async function touchMonth(ym){
   const m = {...(S.months[ym] || {}), changedAt: Date.now()};
@@ -489,33 +493,26 @@ function renderSendStatus(){
 }
 
 /* ---------- skicka ---------- */
-async function openSend(target){
-  if (!profileComplete()) { toast("Fyll i dina uppgifter först."); openSettings(); return; }
-  if (!S.items.length) { toast(`Det finns inget registrerat för ${ymLabel(S.ym).toLowerCase()}.`); return; }
-  const ym = S.ym, items = S.items.slice(), t = totals(items), p = S.profile;
-  const to = target === "chef" ? [p.chefMail] : [...new Set([lonTid(), lonFragor()].filter(Boolean))];
-  const subject = `Tidrapport ${ymLabel(ym)} – ${p.name}${target === "chef" ? " (för attest)" : ""}`;
+/* Gemensam dialog för alla utskick. spec: {title, to, subject, emlName, build: async () => files, body: (files) => text, onSent} */
+async function openSendDialog(spec){
+  const {title, to, subject, emlName} = spec;
   const dlg = $("sendDialog");
-  $("sdTitle").textContent = target === "chef" ? "Skicka tidrapport till chef" : "Skicka tidrapport till lönekontoret";
+  $("sdTitle").textContent = title;
   $("sdTo").replaceChildren(h("span", {class:"addr"}, to.join(", "), h("button", {class:"btn small", type:"button", onclick: () => copyText(to.join(", "))}, "Kopiera")));
   $("sdSubject").textContent = subject;
   $("sdFiles").textContent = "Skapar bilagor…"; $("sdOpts").replaceChildren(); $("sdHelp").textContent = ""; $("sdHelp").classList.remove("manual"); $("sdWarn").hidden = true;
   if (!dlg.open) dlg.showModal();
 
   let files;
-  try { files = await buildAttachments(items, ym); }
+  try { files = await spec.build(); }
   catch (e) { $("sdFiles").textContent = "Kunde inte skapa bilagorna. Ladda om appen och försök igen."; return; }
   if (!dlg.open) return;
   const total = files.reduce((s, f) => s + f.blob.size, 0);
   $("sdFiles").textContent = files.map((f) => f.name).join(", ") + ` (${fmtN(total/1048576, 1)} MB)`;
-  if (total > 20 * 1048576) { $("sdWarn").textContent = "Bilagorna är större än 20 MB och kan stoppas av mejlservern. Skicka i så fall kvittona i ett separat mejl."; $("sdWarn").hidden = false; }
+  if (total > 20 * 1048576) { $("sdWarn").textContent = "Bilagorna är större än 20 MB och kan stoppas av mejlservern. Dela i så fall upp perioden i två redovisningar."; $("sdWarn").hidden = false; }
 
-  const body = mailBody(target, ym, t, files);
-  const markSent = async () => {
-    const m = {...(S.months[ym] || {})}; m[target === "chef" ? "sentChef" : "sentLon"] = Date.now();
-    S.months[ym] = m; await DB.put("meta", {key:"month:" + ym, value:m}).catch(() => {});
-    if (ym === S.ym) renderSendStatus();
-  };
+  const body = spec.body(files);
+  const markSent = async () => { try { await spec.onSent(); } catch (e) { /* statusen är bara en påminnelse */ } };
   const fileObjs = files.map((f) => new File([f.blob], f.name, {type: f.type}));
   let shareFiles = null;
   if (navigator.canShare) {
@@ -529,7 +526,7 @@ async function openSend(target){
     catch (e) { if (e && e.name !== "AbortError") toast("Delningen misslyckades. Prova ett annat alternativ."); }
   }}, "Dela med bilagor (välj e-postappen)");
   const optEml = h("button", {class:"btn " + (!touch || !shareFiles ? "primary" : ""), type:"button", onclick: async () => {
-    downloadBlob(await buildEml({to, subject, body, files}), `Tidrapport_${ym}_${slug(p.name)}.eml`); await markSent();
+    downloadBlob(await buildEml({to, subject, body, files}), emlName); await markSent();
     toast("Utkastet är sparat – öppna filen så öppnas mejlet med bilagor");
   }}, "Skapa mejlutkast med bilagor (Outlook)");
   const optManual = h("button", {class:"btn", type:"button", onclick: () => {
@@ -545,20 +542,121 @@ async function openSend(target){
     + "Mejlutkast: öppna den sparade .eml-filen, så öppnas ett färdigt mejl i Outlook. Kontrollera och tryck Skicka. "
     + "Fungerar inget av det: välj det sista alternativet och bifoga filerna själv.";
 }
-function mailBody(target, ym, t, files){
-  const p = S.profile, abs = Object.entries(t.absByKind).map(([k, v]) => `${k} ${fmtH(v)}`).join(", ");
-  const lines = ["Hej,", "",
-    `Här kommer min tidrapport för ${ymLabel(ym).toLowerCase()}${target === "chef" ? " för attest" : ""}.`, "",
-    `Närvaro: ${fmtH(t.work)}`, `Restid: ${fmtH(t.travel)}`, `Frånvaro: ${fmtH(t.absence)}${abs ? ` (${abs})` : ""}`,
-    `Utlägg att ersätta: ${fmtKr(t.expPrivate)}`, `Milersättning: ${fmtKr(t.mileAmt)} (${fmtN(t.km/10, 1)} mil)`,
-    `Totalt att utbetala: ${fmtKr(r2(t.expPrivate + t.mileAmt))}`];
-  if (t.expCompany) lines.push(`Kvittoredovisning företagskort: ${fmtKr(t.expCompany)}`);
-  if (target === "lon") {
-    const sc = S.months[ym]?.sentChef;
-    lines.push("", sc ? `Tidrapporten skickades till ${p.chefMail} för attest ${fmtDate(sc)}.` : `Attesterande chef: ${p.chefMail}.`);
-  }
-  lines.push("", "Bilagor: " + files.map((f) => f.name).join(", "), "", "Med vänliga hälsningar", p.name + (p.empNo ? ` (anst.nr ${p.empNo})` : ""));
-  return lines.join("\n");
+const signature = () => ["", "Med vänliga hälsningar", S.profile.name + (S.profile.empNo ? ` (anst.nr ${S.profile.empNo})` : "")];
+
+/* Tidrapport till attesterande chef: arbete, resor, frånvaro och utlägg som ska ersättas (privat kort/kontant). */
+function openSend(target){
+  if (target === "lon") { openLonSend(); return; }
+  if (!profileComplete()) { toast("Fyll i dina uppgifter först."); openSettings(); return; }
+  if (!S.items.length) { toast(`Det finns inget registrerat för ${ymLabel(S.ym).toLowerCase()}.`); return; }
+  const ym = S.ym, items = S.items.slice(), t = totals(items), p = S.profile;
+  const base = `Tidrapport_${ym}_${slug(p.name)}`;
+  openSendDialog({
+    title: "Skicka tidrapport till chef",
+    to: [p.chefMail],
+    subject: `Tidrapport ${ymLabel(ym)} – ${p.name} (för attest)`,
+    emlName: base + ".eml",
+    build: async () => [
+      {name: base + ".xlsx", type: XLSX_TYPE, blob: await buildXlsx(p, ym, items)},
+      {name: base + ".pdf", type:"application/pdf", blob: await buildPdf(p, ym, items)}],
+    body: (files) => {
+      const abs = Object.entries(t.absByKind).map(([k, v]) => `${k} ${fmtH(v)}`).join(", ");
+      const lines = ["Hej,", "", `Här kommer min tidrapport för ${ymLabel(ym).toLowerCase()} för attest.`, "",
+        `Närvaro: ${fmtH(t.work)}`, `Restid: ${fmtH(t.travel)}`, `Frånvaro: ${fmtH(t.absence)}${abs ? ` (${abs})` : ""}`,
+        `Utlägg att ersätta (privat kort/kontant): ${fmtKr(t.expPrivate)}`, `Milersättning: ${fmtKr(t.mileAmt)} (${fmtN(t.km/10, 1)} mil)`,
+        `Totalt att utbetala: ${fmtKr(r2(t.expPrivate + t.mileAmt))}`];
+      if (t.expPrivate) lines.push("Kvitton för utläggen skickas separat i kvittoredovisningen.");
+      lines.push("", "Bilagor: " + files.map((f) => f.name).join(", "), ...signature());
+      return lines.join("\n");
+    },
+    onSent: () => markMonth(ym, "sentChef")
+  });
+}
+async function markMonth(ym, key){
+  const m = {...(S.months[ym] || {})}; m[key] = Date.now();
+  S.months[ym] = m; await DB.put("meta", {key:"month:" + ym, value:m});
+  if (ym === S.ym) renderSendStatus();
+}
+
+/* Utlägg till lönekontoret: privata utlägg (ersätts) och milersättning – inga timmar, ingen frånvaro, inga kvitton. */
+function openLonSend(){
+  if (!profileComplete()) { toast("Fyll i dina uppgifter först."); openSettings(); return; }
+  const ym = S.ym, items = S.items.slice(), t = totals(items), p = S.profile;
+  if (!t.expPrivate && !t.mileAmt) { toast(`Det finns inga utlägg eller någon milersättning att skicka för ${ymLabel(ym).toLowerCase()}.`); return; }
+  const n = items.filter(isPrivateExpense).length;
+  const base = `Utlagg_${ym}_${slug(p.name)}`;
+  openSendDialog({
+    title: "Skicka utlägg till lönekontoret",
+    to: [lonMail()],
+    subject: `Utlägg och milersättning ${ymLabel(ym)} – ${p.name}`,
+    emlName: base + ".eml",
+    build: async () => [
+      {name: base + ".pdf", type:"application/pdf", blob: await buildLonPdf(p, ym, items)},
+      {name: base + ".xlsx", type: XLSX_TYPE, blob: await buildLonXlsx(p, ym, items)}],
+    body: (files) => {
+      const sc = S.months[ym]?.sentChef;
+      return ["Hej,", "", `Här kommer mina utlägg och min milersättning för ${ymLabel(ym).toLowerCase()} att betalas ut med lönen.`, "",
+        `Utlägg, privat kort/kontant: ${fmtKr(t.expPrivate)} (${n} st, varav moms ${fmtKr(t.vatPrivate)})`,
+        `Milersättning: ${fmtKr(t.mileAmt)} (${fmtN(t.km/10, 1)} mil)`,
+        `Totalt att utbetala: ${fmtKr(r2(t.expPrivate + t.mileAmt))}`, "",
+        sc ? `Tidrapporten med utläggen skickades till ${p.chefMail} för attest ${fmtDate(sc)}.` : `Attesterande chef: ${p.chefMail} (tidrapporten är ännu inte skickad för attest).`,
+        t.expPrivate ? "Kvittona skickas separat i kvittoredovisningen." : "",
+        "", "Bilagor: " + files.map((f) => f.name).join(", "), ...signature()].filter((l, i, a) => !(l === "" && a[i-1] === "")).join("\n");
+    },
+    onSent: () => markMonth(ym, "sentLon")
+  });
+}
+
+/* ---------- kvittoredovisning ---------- */
+function setKvittoPeriod(ym){ S.kFrom = `${ym}-01`; S.kTo = `${ym}-${pad(daysIn(ym))}`; $("k-from").value = S.kFrom; $("k-to").value = S.kTo; }
+const validPeriod = () => isValidDate(S.kFrom || "") && isValidDate(S.kTo || "") && S.kFrom <= S.kTo;
+async function kvittoExpenses(){
+  const all = (await DB.all("items")).map(sanitizeItem).filter(Boolean);
+  return sortItems(all.filter((i) => i.type === "expense" && i.date >= S.kFrom && i.date <= S.kTo));
+}
+async function getKvittoSent(){
+  const v = (await DB.get("meta", "kvittoSent"))?.value;
+  return v && typeof v === "object" ? {ids: v.ids && typeof v.ids === "object" ? v.ids : {}, last: v.last || null} : {ids:{}, last:null};
+}
+async function renderKvitto(){
+  const info = $("kvittoInfo"), btn = $("sendKvitto");
+  if (!validPeriod()) { info.textContent = "Välj ett giltigt datumintervall (från och med måste vara före till och med)."; btn.disabled = true; return; }
+  const [exps, sent] = await Promise.all([kvittoExpenses(), getKvittoSent()]);
+  const sum = r2(exps.reduce((s, e) => s + e.amount, 0)), missing = exps.filter((e) => !e.receiptId).length;
+  const already = exps.filter((e) => sent.ids[e.id]).length;
+  info.textContent = !exps.length ? "Inga utlägg under perioden."
+    : [`${exps.length} utlägg`, fmtKr(sum), missing ? `${missing} utan kvitto` : null, already ? `${already} redan redovisade` : null].filter(Boolean).join(" · ");
+  btn.disabled = !exps.length;
+  const st = $("statusKvitto"), l = sent.last;
+  if (l && isValidDate(l.from) && isValidDate(l.to) && l.at) { st.textContent = `Senast skickad ${fmtDate(l.at)} (${l.from} – ${l.to})`; st.className = "sendstatus ok"; }
+  else { st.textContent = "Ingen kvittoredovisning skickad ännu"; st.className = "sendstatus"; }
+}
+async function openKvittoSend(){
+  if (!profileComplete()) { toast("Fyll i dina uppgifter först."); openSettings(); return; }
+  if (!validPeriod()) { toast("Välj ett giltigt datumintervall."); return; }
+  const from = S.kFrom, to = S.kTo, p = S.profile, exps = await kvittoExpenses();
+  if (!exps.length) { toast("Det finns inga utlägg under perioden."); return; }
+  const base = `Kvittoredovisning_${from}_${to}_${slug(p.name)}`;
+  const priv = r2(exps.filter((e) => e.payment !== "company").reduce((s, e) => s + e.amount, 0));
+  const comp = r2(exps.filter((e) => e.payment === "company").reduce((s, e) => s + e.amount, 0));
+  const vat = r2(exps.reduce((s, e) => s + e.vat, 0)), missing = exps.filter((e) => !e.receiptId).length;
+  openSendDialog({
+    title: "Skicka kvittoredovisning",
+    to: [kvittoMail()],
+    subject: `Kvittoredovisning ${from} – ${to} – ${p.name}`,
+    emlName: base + ".eml",
+    build: async () => { const {pdf, extra} = await buildKvittoPdf(p, from, to, exps); return [{name: base + ".pdf", type:"application/pdf", blob: pdf}, ...extra]; },
+    body: (files) => ["Hej,", "", `Här kommer min kvittoredovisning för perioden ${from} – ${to}.`, "",
+      `Antal utlägg: ${exps.length}${missing ? ` (varav ${missing} utan kvitto)` : ""}`,
+      `Privat betalt, att ersätta: ${fmtKr(priv)}`, `Företagskort: ${fmtKr(comp)}`, `Varav moms: ${fmtKr(vat)}`,
+      `Attesterande chef: ${p.chefMail}`, "", "Bilagor: " + files.map((f) => f.name).join(", "), ...signature()].join("\n"),
+    onSent: async () => {
+      const s = await getKvittoSent(), now = Date.now();
+      exps.forEach((e) => { s.ids[e.id] = now; });
+      await DB.put("meta", {key:"kvittoSent", value:{ids: s.ids, last:{from, to, at: now}}});
+      renderKvitto();
+    }
+  });
 }
 function mailtoUrl(to, subject, body){
   return `mailto:${to.filter(isEmail).join(",")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body.replace(/\n/g, "\r\n"))}`;
@@ -605,20 +703,13 @@ async function buildEml({to, subject, body, files}){
 }
 
 /* ---------- bilagor: Excel (lönekontorets mall) + PDF ---------- */
-async function buildAttachments(items, ym){
-  const p = S.profile, base = `Tidrapport_${ym}_${slug(p.name)}`;
-  const xlsx = await buildXlsx(p, ym, items);
-  const {pdf, extra} = await buildPdf(p, ym, items);
-  return [{name: base + ".xlsx", type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", blob: xlsx},
-          {name: base + ".pdf", type:"application/pdf", blob: pdf}, ...extra];
-}
 function dayRows(items){
   const days = []; for (let d = 1; d <= 31; d++) days.push({d, desc:[], work:0, travel:0, exp:0, abs:0, km:0});
   for (const it of sortItems(items)) {
     const x = days[+it.date.slice(8) - 1];
     if (it.type === "work") { x.work += it.hours; if (it.desc) x.desc.push(it.desc); }
     if (it.type === "travel") { x.travel += it.travelHours; x.km += it.km; x.desc.push(`Resa: ${it.desc}${it.km ? ` (${fmtN(it.km, 1)} km)` : ""}`); }
-    if (it.type === "expense") { if (it.payment !== "company") x.exp += it.amount; x.desc.push(`${it.payment === "company" ? "Kvitto (ftg-kort)" : "Utlägg"}: ${it.desc || it.category}`); }
+    if (isPrivateExpense(it)) { x.exp += it.amount; x.desc.push(`Utlägg: ${it.desc || it.category}`); }
     if (it.type === "absence") { x.abs += it.hours; x.desc.push(`${it.kind}${it.desc ? ` – ${it.desc}` : ""}`); }
   }
   days.forEach((x) => { x.work = r2(x.work); x.travel = r2(x.travel); x.exp = r2(x.exp); x.abs = r2(x.abs); x.mil = r2(x.km / 10); });
@@ -683,9 +774,9 @@ async function buildXlsx(profile, ym, items){
   for (const [k, km] of Object.entries(byVeh)) { const rate = rateFor(k); if (!rate) continue;
     setStr("D" + row, `Milersättning ${VEH_LABEL[k].toLowerCase()}: ${fmtN(km/10, 1)} mil × ${fmtN(rate)} kr`); setNum("G" + row, r2(km/10*rate), 8); row++; }
   setStr("D" + row, "Totalt att utbetala (utlägg + milersättning)"); setF("G" + row, `SUM(G44:G${row-1})`, r2(t.expPrivate + t.mileAmt), 8); row++;
-  if (t.expCompany) { setStr("D" + row, "Kvittoredovisning företagskort (ej ersättning)"); setNum("G" + row, t.expCompany, 8); row++; }
-  if (t.vat) { setStr("D" + row, "Varav ingående moms, alla kvitton"); setNum("G" + row, t.vat, 8); row++; }
+  if (t.vatPrivate) { setStr("D" + row, "Varav ingående moms, utlägg att ersätta"); setNum("G" + row, t.vatPrivate, 8); row++; }
   for (const [k, hrs] of Object.entries(t.absByKind)) { setStr("D" + row, `Frånvaro – ${k}`); setNum("H" + row, r2(hrs)); row++; }
+  if (t.expPrivate) { setStr("D" + row, "Kvitton redovisas separat i kvittoredovisningen."); row++; }
   setStr("D" + (row + 1), `Attesterande chef: ${profile.chefMail}`);
 
   let out = new XMLSerializer().serializeToString(doc);
@@ -704,78 +795,184 @@ async function getLogo(){
   }
   return logoCache;
 }
-async function buildPdf(profile, ym, items){
-  const {jsPDF} = window.jspdf; const pdf = new jsPDF({unit:"mm", format:"a4"});
-  const W = 210, M = 16; let y = M;
-  const INK = [30,58,74], ACC = [48,87,110], MUTED = [100,115,122], LINE = [210,220,224], WARN = [154,85,18];
-  const t = totals(items), sorted = sortItems(items), extra = [];
-  const pageBreak = (need) => { if (y + need > 297 - M) { pdf.addPage(); y = M; return true; } return false; };
+/* Gemensam sidmall för PDF:erna: logotyp, rubrik, anställd och sammanfattningsruta. */
+const PDF_C = {INK:[30,58,74], ACC:[48,87,110], MUTED:[100,115,122], LINE:[210,220,224], WARN:[154,85,18]};
+async function pdfStart(title, subtitle, profile, summary){
+  const {jsPDF} = window.jspdf; const pdf = new jsPDF({unit:"mm", format:"a4", compress:true});
+  const W = 210, M = 16, C = PDF_C;
+  const ctx = {pdf, W, M, y: M};
+  ctx.pageBreak = (need) => { if (ctx.y + need > 297 - M) { pdf.addPage(); ctx.y = M; return true; } return false; };
+  ctx.sect = (t) => { ctx.y += 8; ctx.pageBreak(20); pdf.setFont("helvetica", "bold"); pdf.setFontSize(11); pdf.setTextColor(...C.INK); pdf.text(t, M, ctx.y); pdf.setFont("helvetica", "normal"); ctx.y += 6; pdf.setFontSize(8.5); };
   const logo = await getLogo();
-  if (logo && logo.s) pdf.addImage(logo.d, "PNG", W - M - 38, M - 4, 38, 38 * logo.s.h / logo.s.w);
-  pdf.setFont("helvetica", "bold"); pdf.setFontSize(18); pdf.setTextColor(...INK); pdf.text("Tidrapport", M, y + 4);
-  pdf.setFontSize(11); pdf.setFont("helvetica", "normal"); pdf.setTextColor(...MUTED);
-  pdf.text([ymLabel(ym), S.cfg.foretag].filter(Boolean).join("  ·  "), M, y + 11);
-  y += 20; pdf.setTextColor(...INK); pdf.setFontSize(10);
-  pdf.text(`Anställd: ${profile.name}${profile.empNo ? `   Anst.nr: ${profile.empNo}` : ""}`, M, y); y += 5;
-  pdf.setTextColor(...MUTED); pdf.text(`Attesterande chef: ${profile.chefMail}`, M, y); y += 7;
-  const sum = [["Närvaro", fmtH(t.work)], ["Restid", fmtH(t.travel)], ["Frånvaro", fmtH(t.absence)], ["Utlägg att ersätta", fmtKr(t.expPrivate)],
-    ["Milersättning", `${fmtKr(t.mileAmt)} (${fmtN(t.km/10, 1)} mil)`], ["Totalt att utbetala", fmtKr(r2(t.expPrivate + t.mileAmt))]];
-  pdf.setFillColor(238, 243, 245); pdf.rect(M, y, W - 2*M, 26, "F");
-  sum.forEach(([k, v], i) => { const cx = M + 4 + (i % 3) * ((W - 2*M) / 3), cy = y + 7 + Math.floor(i / 3) * 11;
-    pdf.setFontSize(8); pdf.setTextColor(...MUTED); pdf.text(k.toUpperCase(), cx, cy);
-    pdf.setFontSize(11); pdf.setTextColor(...INK); pdf.setFont("helvetica", "bold"); pdf.text(v, cx, cy + 5); pdf.setFont("helvetica", "normal"); });
-  y += 34;
-  const cols = [{h:"Datum", w:18}, {h:"Beskrivning", w:76}, {h:"Närvaro", w:17, r:1}, {h:"Restid", w:15, r:1}, {h:"Utlägg", w:24, r:1}, {h:"Frånvaro", w:17, r:1}, {h:"Mil", w:11, r:1}];
-  const head = () => { pdf.setFillColor(...ACC); pdf.rect(M, y, W - 2*M, 7, "F"); pdf.setTextColor(255, 255, 255); pdf.setFontSize(8.5); pdf.setFont("helvetica", "bold");
-    let x = M; cols.forEach((c) => { pdf.text(c.h, c.r ? x + c.w - 2 : x + 2, y + 4.8, {align: c.r ? "right" : "left"}); x += c.w; }); pdf.setFont("helvetica", "normal"); y += 7; };
+  if (logo && logo.s) pdf.addImage(logo.d, "PNG", W - M - 38, M - 4, 38, 38 * logo.s.h / logo.s.w, "logo", "FAST");
+  pdf.setFont("helvetica", "bold"); pdf.setFontSize(18); pdf.setTextColor(...C.INK); pdf.text(title, M, ctx.y + 4);
+  pdf.setFontSize(11); pdf.setFont("helvetica", "normal"); pdf.setTextColor(...C.MUTED);
+  pdf.text([subtitle, S.cfg.foretag].filter(Boolean).join("  ·  "), M, ctx.y + 11);
+  ctx.y += 20; pdf.setTextColor(...C.INK); pdf.setFontSize(10);
+  pdf.text(`Anställd: ${profile.name}${profile.empNo ? `   Anst.nr: ${profile.empNo}` : ""}`, M, ctx.y); ctx.y += 5;
+  pdf.setTextColor(...C.MUTED); pdf.text(`Attesterande chef: ${profile.chefMail}`, M, ctx.y); ctx.y += 7;
+  pdf.setFillColor(238, 243, 245); pdf.rect(M, ctx.y, W - 2*M, 26, "F");
+  summary.forEach(([k, v], i) => { const cx = M + 4 + (i % 3) * ((W - 2*M) / 3), cy = ctx.y + 7 + Math.floor(i / 3) * 11;
+    pdf.setFontSize(8); pdf.setTextColor(...C.MUTED); pdf.text(k.toUpperCase(), cx, cy);
+    pdf.setFontSize(11); pdf.setTextColor(...C.INK); pdf.setFont("helvetica", "bold"); pdf.text(v, cx, cy + 5); pdf.setFont("helvetica", "normal"); });
+  ctx.y += 34;
+  return ctx;
+}
+function pdfTable(ctx, cols, rows){
+  const {pdf, W, M} = ctx, C = PDF_C;
+  const head = () => { pdf.setFillColor(...C.ACC); pdf.rect(M, ctx.y, W - 2*M, 7, "F"); pdf.setTextColor(255, 255, 255); pdf.setFontSize(8.5); pdf.setFont("helvetica", "bold");
+    let x = M; cols.forEach((c) => { pdf.text(c.h, c.r ? x + c.w - 2 : x + 2, ctx.y + 4.8, {align: c.r ? "right" : "left"}); x += c.w; }); pdf.setFont("helvetica", "normal"); ctx.y += 7; };
   head(); pdf.setFontSize(8.5);
-  for (const x of dayRows(items).filter((d) => d.desc.length || d.work || d.travel || d.exp || d.abs || d.mil)) {
-    const ds = `${ym}-${pad(x.d)}`;
-    const lines = pdf.splitTextToSize(x.desc.join("; ") || "–", cols[1].w - 4); const rh = Math.max(6, lines.length * 3.8 + 2.4);
-    if (pageBreak(rh)) { head(); pdf.setFontSize(8.5); }
-    pdf.setTextColor(...INK); let cx = M;
-    const vals = [`${x.d} ${weekday(ds)}`, lines, x.work ? fmtN(x.work) : "", x.travel ? fmtN(x.travel) : "", x.exp ? fmtKr(x.exp) : "", x.abs ? fmtN(x.abs) : "", x.mil ? fmtN(x.mil, 1) : ""];
-    cols.forEach((c, i) => { pdf.text(vals[i], c.r ? cx + c.w - 2 : cx + 2, y + 4.2, {align: c.r ? "right" : "left"}); cx += c.w; });
-    y += rh; pdf.setDrawColor(...LINE); pdf.line(M, y, W - M, y);
+  for (const row of rows) {
+    const cells = row.cells.map((v, i) => cols[i].wrap ? pdf.splitTextToSize(String(v || "–"), cols[i].w - 4) : String(v));
+    const n = Math.max(1, ...cells.map((c) => Array.isArray(c) ? c.length : 1)), rh = Math.max(6, n * 3.8 + 2.4);
+    if (ctx.pageBreak(rh)) { head(); pdf.setFontSize(8.5); }
+    let x = M;
+    cells.forEach((v, i) => { pdf.setTextColor(...(row.warn === i ? C.WARN : C.INK)); pdf.text(v, cols[i].r ? x + cols[i].w - 2 : x + 2, ctx.y + 4.2, {align: cols[i].r ? "right" : "left"}); x += cols[i].w; });
+    ctx.y += rh; pdf.setDrawColor(...C.LINE); pdf.line(M, ctx.y, W - M, ctx.y);
   }
-  const exps = sorted.filter((i) => i.type === "expense");
-  const receipts = {};
-  for (const e of exps) if (e.receiptId) receipts[e.id] = await DB.get("receipts", e.receiptId);
-  const sect = (title) => { y += 8; pageBreak(20); pdf.setFont("helvetica", "bold"); pdf.setFontSize(11); pdf.setTextColor(...INK); pdf.text(title, M, y); pdf.setFont("helvetica", "normal"); y += 6; pdf.setFontSize(8.5); };
+}
+function pdfSignatures(ctx, right){
+  const {pdf, W, M} = ctx;
+  ctx.y += 14; ctx.pageBreak(24); pdf.setDrawColor(...PDF_C.MUTED);
+  pdf.line(M, ctx.y, M + 70, ctx.y); pdf.line(W - M - 70, ctx.y, W - M, ctx.y); pdf.setFontSize(8); pdf.setTextColor(...PDF_C.MUTED);
+  pdf.text("Anställd, underskrift och datum", M, ctx.y + 4); pdf.text(right, W - M - 70, ctx.y + 4);
+}
+
+/* Tidrapportens PDF till chefen: tid, resor, frånvaro och utlägg som ska ersättas – inga kvittobilder, inget företagskort. */
+async function buildPdf(profile, ym, items){
+  const t = totals(items), sorted = sortItems(items);
+  const ctx = await pdfStart("Tidrapport", ymLabel(ym), profile, [["Närvaro", fmtH(t.work)], ["Restid", fmtH(t.travel)], ["Frånvaro", fmtH(t.absence)],
+    ["Utlägg att ersätta", fmtKr(t.expPrivate)], ["Milersättning", `${fmtKr(t.mileAmt)} (${fmtN(t.km/10, 1)} mil)`], ["Totalt att utbetala", fmtKr(r2(t.expPrivate + t.mileAmt))]]);
+  pdfTable(ctx, [{h:"Datum", w:18}, {h:"Beskrivning", w:76, wrap:1}, {h:"Närvaro", w:17, r:1}, {h:"Restid", w:15, r:1}, {h:"Utlägg", w:24, r:1}, {h:"Frånvaro", w:17, r:1}, {h:"Mil", w:11, r:1}],
+    dayRows(items).filter((d) => d.desc.length || d.work || d.travel || d.exp || d.abs || d.mil).map((x) => ({cells: [
+      `${x.d} ${weekday(`${ym}-${pad(x.d)}`)}`, x.desc.join("; "), x.work ? fmtN(x.work) : "", x.travel ? fmtN(x.travel) : "", x.exp ? fmtKr(x.exp) : "", x.abs ? fmtN(x.abs) : "", x.mil ? fmtN(x.mil, 1) : ""]})));
+  const exps = sorted.filter(isPrivateExpense);
   if (exps.length) {
-    sect("Utlägg och kvitton");
-    exps.forEach((e, i) => { pageBreak(6); pdf.setTextColor(...INK);
-      pdf.text(`${i+1}. ${e.date}`, M, y); pdf.text(pdf.splitTextToSize(`${e.desc} (${e.category})`, 70)[0], M + 26, y);
-      pdf.text(e.payment === "company" ? "Ftg-kort" : "Privat", M + 100, y);
-      pdf.text(`moms ${fmtKr(e.vat)}`, M + 155, y, {align:"right"}); pdf.text(fmtKr(e.amount), W - M, y, {align:"right"});
-      const r = receipts[e.id];
-      if (!r) { pdf.setTextColor(...WARN); pdf.text("kvitto saknas", M + 115, y); }
-      else { pdf.setTextColor(...MUTED); pdf.text(r.kind === "pdf" ? "separat fil" : `bilaga ${i+1}`, M + 115, y); }
-      y += 5; });
+    ctx.sect("Utlägg att ersätta (privat kort/kontant)");
+    pdfTable(ctx, [{h:"Datum", w:22}, {h:"Beskrivning", w:66, wrap:1}, {h:"Kategori", w:30, wrap:1}, {h:"Kvitto", w:16}, {h:"Moms", w:22, r:1}, {h:"Belopp", w:22, r:1}],
+      exps.map((e) => ({cells: [e.date, e.desc, e.category, e.receiptId ? "finns" : "saknas", fmtKr(e.vat), fmtKr(e.amount)], warn: e.receiptId ? -1 : 3})));
+    ctx.y += 4; ctx.pageBreak(6); ctx.pdf.setFontSize(8.5); ctx.pdf.setTextColor(...PDF_C.MUTED);
+    ctx.pdf.text("Kvittona redovisas separat i kvittoredovisningen.", ctx.M, ctx.y + 2); ctx.y += 4;
   }
   const trs = sorted.filter((i) => i.type === "travel" && i.km);
   if (trs.length) {
-    sect("Körjournal");
-    trs.forEach((tr) => { pageBreak(6); pdf.setTextColor(...INK); const rate = rateFor(tr.vehicle);
-      pdf.text(tr.date, M, y); pdf.text(pdf.splitTextToSize(tr.desc, 80)[0], M + 22, y);
-      pdf.text(`${fmtN(tr.km, 1)} km · ${VEH_LABEL[tr.vehicle]}`, M + 106, y); pdf.text(rate ? fmtKr(r2(tr.km/10*rate)) : "–", W - M, y, {align:"right"}); y += 5; });
+    ctx.sect("Körjournal");
+    pdfTable(ctx, [{h:"Datum", w:22}, {h:"Resa", w:84, wrap:1}, {h:"Km", w:16, r:1}, {h:"Fordon", w:30}, {h:"Ersättning", w:26, r:1}],
+      trs.map((tr) => ({cells: [tr.date, tr.desc, fmtN(tr.km, 1), VEH_LABEL[tr.vehicle], rateFor(tr.vehicle) ? fmtKr(r2(tr.km/10*rateFor(tr.vehicle))) : "–"]})));
   }
-  y += 14; pageBreak(24); pdf.setDrawColor(...MUTED);
-  pdf.line(M, y, M + 70, y); pdf.line(W - M - 70, y, W - M, y); pdf.setFontSize(8); pdf.setTextColor(...MUTED);
-  pdf.text("Anställd, underskrift och datum", M, y + 4); pdf.text("Attest chef", W - M - 70, y + 4);
-  for (let i = 0; i < exps.length; i++) {
-    const e = exps[i], r = receipts[e.id]; if (!r) continue;
-    if (r.kind === "pdf") { extra.push({name: `Kvitto_${ym}_${pad(i+1)}_${slug(e.desc)}.pdf`, type:"application/pdf", blob: r.blob}); continue; }
-    if (await sniff(r.blob) !== "image/jpeg") continue;
-    const src = await blobToDataUrl(r.blob), sz = await imgSize(src); if (!sz) continue;
-    pdf.addPage(); y = M;
-    pdf.setFont("helvetica", "bold"); pdf.setFontSize(11); pdf.setTextColor(...INK); pdf.text(`Bilaga ${i+1} – kvitto`, M, y + 2);
-    pdf.setFont("helvetica", "normal"); pdf.setFontSize(9); pdf.setTextColor(...MUTED);
-    pdf.text(pdf.splitTextToSize(`${e.date} · ${e.desc} · ${fmtKr(e.amount)} · ${profile.name}`, W - 2*M)[0], M, y + 8);
+  pdfSignatures(ctx, "Attest chef");
+  return ctx.pdf.output("blob");
+}
+
+/* Utläggsunderlag till lönekontoret (PDF): privata utlägg och milersättning. */
+async function buildLonPdf(profile, ym, items){
+  const t = totals(items), sorted = sortItems(items), exps = sorted.filter(isPrivateExpense), trs = sorted.filter((i) => i.type === "travel" && i.km && rateFor(i.vehicle));
+  const ctx = await pdfStart("Utlägg och milersättning", ymLabel(ym), profile, [["Utlägg, privat kort/kontant", fmtKr(t.expPrivate)], ["Antal utlägg", String(exps.length)], ["Varav moms", fmtKr(t.vatPrivate)],
+    ["Milersättning", fmtKr(t.mileAmt)], ["Körda mil", fmtN(t.km/10, 1)], ["Totalt att utbetala", fmtKr(r2(t.expPrivate + t.mileAmt))]]);
+  if (exps.length) {
+    ctx.sect("Utlägg att ersätta (privat kort/kontant)");
+    pdfTable(ctx, [{h:"Datum", w:22}, {h:"Beskrivning", w:66, wrap:1}, {h:"Kategori", w:30, wrap:1}, {h:"Kvitto", w:16}, {h:"Moms", w:22, r:1}, {h:"Belopp", w:22, r:1}],
+      exps.map((e) => ({cells: [e.date, e.desc, e.category, e.receiptId ? "finns" : "saknas", fmtKr(e.vat), fmtKr(e.amount)], warn: e.receiptId ? -1 : 3})));
+  }
+  if (trs.length) {
+    ctx.sect("Milersättning");
+    pdfTable(ctx, [{h:"Datum", w:22}, {h:"Resa", w:70, wrap:1}, {h:"Km", w:16, r:1}, {h:"Fordon", w:28}, {h:"Kr/mil", w:16, r:1}, {h:"Ersättning", w:26, r:1}],
+      trs.map((tr) => ({cells: [tr.date, tr.desc, fmtN(tr.km, 1), VEH_LABEL[tr.vehicle], fmtN(rateFor(tr.vehicle)), fmtKr(r2(tr.km/10*rateFor(tr.vehicle)))]})));
+  }
+  ctx.y += 4; ctx.pageBreak(10); ctx.pdf.setFontSize(8.5); ctx.pdf.setTextColor(...PDF_C.MUTED);
+  const sc = S.months[ym]?.sentChef;
+  ctx.pdf.text(sc ? `Skickad till ${profile.chefMail} för attest ${fmtDate(sc)}.` : `Attesteras av ${profile.chefMail}.`, ctx.M, ctx.y + 2); ctx.y += 5;
+  if (exps.length) { ctx.pdf.text("Kvittona redovisas separat i kvittoredovisningen.", ctx.M, ctx.y + 2); ctx.y += 4; }
+  pdfSignatures(ctx, "Attest chef");
+  return ctx.pdf.output("blob");
+}
+
+/* Utläggsunderlag till lönekontoret (Excel): en enkel lista för registrering i lönesystemet.
+   Byggs från grunden med textceller (inlineStr), så att inget kan tolkas som formel. */
+async function buildLonXlsx(profile, ym, items){
+  const xe = (v) => String(v).replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+  const col = (i) => String.fromCharCode(65 + i);
+  const rows = [];
+  const add = (cells, style) => rows.push({cells, style});
+  const t = totals(items), sorted = sortItems(items);
+  add(["Utlägg och milersättning"], 1);
+  add(["Anställd", profile.name]); add(["Anställningsnummer", profile.empNo || ""]); add(["Period", ymLabel(ym)]);
+  add(["Attesterande chef", profile.chefMail]); add(["Företag", S.cfg.foretag || ""]); add([]);
+  add(["Datum", "Typ", "Beskrivning", "Kategori / fordon", "Km", "Moms (kr)", "Belopp (kr)"], 1);
+  for (const e of sorted.filter(isPrivateExpense)) add([e.date, "Utlägg", e.desc, e.category, null, e.vat, e.amount]);
+  for (const tr of sorted.filter((i) => i.type === "travel" && i.km && rateFor(i.vehicle)))
+    add([tr.date, "Milersättning", tr.desc, `${VEH_LABEL[tr.vehicle]} (${fmtN(rateFor(tr.vehicle))} kr/mil)`, tr.km, null, r2(tr.km/10*rateFor(tr.vehicle))]);
+  add([]);
+  add(["Summa utlägg", null, null, null, null, t.vatPrivate, t.expPrivate], 3);
+  add(["Summa milersättning", null, null, null, t.km, null, t.mileAmt], 3);
+  add(["Totalt att utbetala", null, null, null, null, null, r2(t.expPrivate + t.mileAmt)], 3);
+  const sheetRows = rows.map((r, ri) => `<row r="${ri+1}">` + r.cells.map((v, ci) => {
+    if (v == null || v === "") return "";
+    const ref = col(ci) + (ri + 1), bold = r.style === 1 || r.style === 3;
+    if (typeof v === "number") return `<c r="${ref}" s="${bold ? 3 : 2}"><v>${v}</v></c>`;
+    return `<c r="${ref}" t="inlineStr"${bold ? ' s="1"' : ""}><is><t xml:space="preserve">${xe(String(v).slice(0, 1000))}</t></is></c>`;
+  }).join("") + "</row>").join("");
+  const z = new JSZip();
+  z.file("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>');
+  z.file("_rels/.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
+  z.file("xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Utlägg" sheetId="1" r:id="rId1"/></sheets></workbook>');
+  z.file("xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>');
+  z.file("xl/styles.xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="4"><xf/><xf fontId="1" applyFont="1"/><xf numFmtId="4" applyNumberFormat="1"/><xf numFmtId="4" fontId="1" applyNumberFormat="1" applyFont="1"/></cellXfs></styleSheet>');
+  z.file("xl/worksheets/sheet1.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="20" customWidth="1"/><col min="2" max="2" width="15" customWidth="1"/><col min="3" max="3" width="42" customWidth="1"/><col min="4" max="4" width="28" customWidth="1"/><col min="5" max="5" width="9" customWidth="1"/><col min="6" max="7" width="13" customWidth="1"/></cols><sheetData>${sheetRows}</sheetData></worksheet>`);
+  return z.generateAsync({type:"blob", compression:"DEFLATE", mimeType: XLSX_TYPE});
+}
+
+/* Kvittoredovisningens PDF: alla utlägg i perioden och varje kvitto – bilder och uppladdade PDF:er – i en samlad fil. */
+async function buildKvittoPdf(profile, from, to, exps){
+  const priv = r2(exps.filter((e) => e.payment !== "company").reduce((s, e) => s + e.amount, 0));
+  const comp = r2(exps.filter((e) => e.payment === "company").reduce((s, e) => s + e.amount, 0));
+  const vat = r2(exps.reduce((s, e) => s + e.vat, 0)), missing = exps.filter((e) => !e.receiptId).length;
+  // Läs in kvittona först, så att sammanställningen kan säga exakt var varje kvitto finns.
+  const recs = [];
+  for (const e of exps) {
+    const r = e.receiptId ? await DB.get("receipts", e.receiptId) : null;
+    let src = null;
+    if (r && r.kind === "pdf" && await sniff(r.blob) === "application/pdf") {
+      try { src = await PDFLib.PDFDocument.load(await r.blob.arrayBuffer(), {updateMetadata:false}); if (!src.getPageCount()) src = null; } catch (x) { src = null; }
+    }
+    recs.push({e, r: r && (r.kind === "pdf" || await sniff(r.blob) === "image/jpeg") ? r : null, src});
+  }
+  const ctx = await pdfStart("Kvittoredovisning", `${from} – ${to}`, profile, [["Antal utlägg", String(exps.length)], ["Privat betalt, att ersätta", fmtKr(priv)], ["Företagskort", fmtKr(comp)],
+    ["Varav moms", fmtKr(vat)], ["Utan kvitto", String(missing)], ["Totalt", fmtKr(r2(priv + comp))]]);
+  const {pdf, W, M} = ctx, extra = [], inserts = [];
+  const label = (rec, n) => !rec.r ? "saknas" : (rec.r.kind === "pdf" && !rec.src) ? "separat fil" : `bilaga ${n}`;
+  pdfTable(ctx, [{h:"Nr", w:10}, {h:"Datum", w:21}, {h:"Beskrivning", w:55, wrap:1}, {h:"Kategori", w:26, wrap:1}, {h:"Betalt", w:16}, {h:"Kvitto", w:18}, {h:"Moms", w:15, r:1}, {h:"Belopp", w:17, r:1}],
+    recs.map((rec, i) => ({cells: [String(i+1), rec.e.date, rec.e.desc, rec.e.category, rec.e.payment === "company" ? "Ftg-kort" : "Privat", label(rec, i+1), fmtAmt(rec.e.vat), fmtAmt(rec.e.amount)], warn: rec.r ? -1 : 5})));
+  pdfSignatures(ctx, "Attest");
+  for (let i = 0; i < recs.length; i++) {
+    const {e, r, src} = recs[i]; if (!r) continue;
+    if (r.kind === "pdf" && !src) { extra.push({name: `Kvitto_${pad(i+1)}_${e.date}_${slug(e.desc)}.pdf`, type:"application/pdf", blob: r.blob}); continue; }
+    pdf.addPage();
+    pdf.setFont("helvetica", "bold"); pdf.setFontSize(11); pdf.setTextColor(...PDF_C.INK); pdf.text(`Bilaga ${i+1} – kvitto`, M, M + 2);
+    pdf.setFont("helvetica", "normal"); pdf.setFontSize(9); pdf.setTextColor(...PDF_C.MUTED);
+    pdf.text(pdf.splitTextToSize(`${e.date} · ${e.desc} · ${e.category} · ${fmtKr(e.amount)} · ${profile.name}`, W - 2*M)[0], M, M + 8);
+    if (r.kind === "pdf") {
+      pdf.text(`Kvittot är en PDF på ${src.getPageCount()} ${src.getPageCount() > 1 ? "sidor" : "sida"} och följer efter den här sidan.`, M, M + 16);
+      inserts.push({at: pdf.getNumberOfPages(), src});
+      continue;
+    }
+    const data = await blobToDataUrl(r.blob), sz = await imgSize(data); if (!sz) continue;
     const sc = Math.min((W - 2*M) / sz.w, (297 - 2*M - 16) / sz.h);
-    pdf.addImage(src, "JPEG", M, y + 14, sz.w * sc, sz.h * sc);
+    pdf.addImage(data, "JPEG", M, M + 14, sz.w * sc, sz.h * sc);
   }
-  return {pdf: pdf.output("blob"), extra};
+  let bytes = pdf.output("arraybuffer");
+  if (inserts.length) {
+    const doc = await PDFLib.PDFDocument.load(bytes);
+    let offset = 0;
+    for (const ins of inserts) {
+      const pages = await doc.copyPages(ins.src, ins.src.getPageIndices());
+      pages.forEach((pg, k) => doc.insertPage(ins.at + offset + k, pg));
+      offset += pages.length;
+    }
+    bytes = await doc.save();
+  }
+  return {pdf: new Blob([bytes], {type:"application/pdf"}), extra};
 }
 
 /* ---------- säkerhetskopia ---------- */
@@ -785,7 +982,7 @@ async function saveBackup(){
     const rec = [];
     for (const r of receipts) rec.push({id:r.id, kind:r.kind, name:r.name, createdAt:r.createdAt, data: (await blobB64(r.blob)).replace(/\r\n/g, "")});
     const data = {app:"tidrapport", format:1, exportedAt: new Date().toISOString(),
-      profile: S.profile, items, receipts: rec, months: meta.filter((m) => /^month:\d{4}-\d{2}$/.test(m.key))};
+      profile: S.profile, items, receipts: rec, months: meta.filter((m) => /^month:\d{4}-\d{2}$/.test(m.key)), kvittoSent: meta.find((m) => m.key === "kvittoSent")?.value || null};
     downloadBlob(new Blob([JSON.stringify(data)], {type:"application/json"}), `Tidrapport_sakerhetskopia_${todayStr()}.json`);
     toast("Säkerhetskopian är sparad");
   } catch (e) { toast("Kunde inte skapa säkerhetskopian."); }
@@ -826,6 +1023,13 @@ async function restoreBackup(e){
       const cur = (await DB.get("meta", m.key))?.value || {}, v = {};
       for (const k of ["sentChef","sentLon","changedAt"]) { const a = num(cur[k], 0, 1e14) || 0, b = num(m.value[k], 0, 1e14) || 0; if (a || b) v[k] = Math.max(a, b); }
       await DB.put("meta", {key:m.key, value:v});
+    }
+    if (data.kvittoSent && typeof data.kvittoSent === "object" && data.kvittoSent.ids && typeof data.kvittoSent.ids === "object") {
+      const cur = await getKvittoSent();
+      for (const [id, ts] of Object.entries(data.kvittoSent.ids)) { const n = num(ts, 0, 1e14); if (ID_RE.test(id) && n) cur.ids[id] = Math.max(cur.ids[id] || 0, n); }
+      const l = data.kvittoSent.last, la = l && num(l.at, 0, 1e14);
+      if (la && isValidDate(String(l.from)) && isValidDate(String(l.to)) && (!cur.last || la > cur.last.at)) cur.last = {from: l.from, to: l.to, at: la};
+      await DB.put("meta", {key:"kvittoSent", value: cur});
     }
     if (!profileComplete() && data.profile) {
       const p = sanitizeProfile({...data.profile, ...Object.fromEntries(Object.entries(S.profile || {}).filter(([, v]) => v))});

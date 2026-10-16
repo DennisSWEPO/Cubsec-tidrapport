@@ -17,6 +17,7 @@
 <link rel="stylesheet" href="styles.css">
 <script src="vendor/jszip.min.js" defer></script>
 <script src="vendor/jspdf.umd.min.js" defer></script>
+<script src="vendor/pdf-lib.min.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
@@ -47,10 +48,8 @@
           <label>Ditt namn<input type="text" id="su-name" name="name" maxlength="80" autocomplete="name" required></label>
           <label>Anställningsnummer (valfritt)<input type="text" id="su-emp" maxlength="30"></label>
           <label>Närmsta chefs e-post (attesterare)<input type="email" id="su-chef" maxlength="254" inputmode="email" required></label>
-          <div id="su-lon" class="stack" hidden>
-            <label>Lönekontorets e-post för tidrapporter<input type="email" id="su-lontid" maxlength="254" inputmode="email"></label>
-            <label>Lönekontorets e-post för lönefrågor och utlägg<input type="email" id="su-lonfr" maxlength="254" inputmode="email"></label>
-          </div>
+          <label id="su-lontid-wrap" hidden>Lönekontorets e-post för utlägg<input type="email" id="su-lontid" maxlength="254" inputmode="email"></label>
+          <label id="su-kvitto-wrap" hidden>E-post för kvittoredovisning<input type="email" id="su-kvitto" maxlength="254" inputmode="email"></label>
         </div>
         <p class="formerr" id="setupErr" hidden></p>
         <button class="btn primary" type="submit">Kom igång</button>
@@ -149,8 +148,24 @@
               <span class="sendstatus" id="statusChef"></span>
             </div>
             <div>
-              <button class="btn primary" type="button" id="sendLon">Skicka tidrapport Lönekontor</button>
+              <button class="btn primary" type="button" id="sendLon">Skicka utlägg Lönekontor</button>
               <span class="sendstatus" id="statusLon"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Kvittoredovisning</h2>
+          <p class="hint">Alla utlägg med kvittodatum inom perioden samlas i en PDF och skickas separat. Kvittona följer inte med tidrapporten.</p>
+          <div class="row">
+            <label>Från och med<input type="date" id="k-from"></label>
+            <label>Till och med<input type="date" id="k-to"></label>
+          </div>
+          <p class="calc" id="kvittoInfo"></p>
+          <div class="sendrow">
+            <div>
+              <button class="btn primary" type="button" id="sendKvitto">Skicka kvittoredovisning</button>
+              <span class="sendstatus" id="statusKvitto"></span>
             </div>
           </div>
         </div>
@@ -173,9 +188,9 @@
             <label>Namn<input type="text" id="p-name" maxlength="80" autocomplete="name" required></label>
             <label>Anställningsnummer (valfritt)<input type="text" id="p-emp" maxlength="30"></label>
             <label>Närmsta chefs e-post (attesterare)<input type="email" id="p-chef" maxlength="254" inputmode="email" required></label>
-            <label>Lönekontor, tidrapporter<input type="email" id="p-lontid" maxlength="254" inputmode="email"></label>
-            <label>Lönekontor, lönefrågor och utlägg<input type="email" id="p-lonfr" maxlength="254" inputmode="email"></label>
-            <p class="hint" id="lonHint" hidden>Lönekontorets adresser hanteras av administratören.</p>
+            <label>Lönekontor, utlägg<input type="email" id="p-lontid" maxlength="254" inputmode="email"></label>
+            <label>Kvittoredovisning<input type="email" id="p-kvitto" maxlength="254" inputmode="email"></label>
+            <p class="hint" id="lonHint" hidden>Adresser som är låsta hanteras av administratören.</p>
           </div>
           <p class="formerr" id="profileErr" hidden></p>
           <div class="actions">

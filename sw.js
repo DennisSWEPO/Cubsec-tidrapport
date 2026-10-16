@@ -1,6 +1,6 @@
 /* Service worker: gör appen tillgänglig offline.
    Höj VERSION vid varje ny utgåva så att användarna får de nya filerna. */
-const VERSION = "tidrapport-v1.0.0";
+const VERSION = "tidrapport-v1.2.0";
 const SHELL = [
   "./",
   "./index.html",
@@ -11,6 +11,7 @@ const SHELL = [
   "./tidrapport-mall.xlsx",
   "./vendor/jszip.min.js",
   "./vendor/jspdf.umd.min.js",
+  "./vendor/pdf-lib.min.js",
   "./icons/logo.png",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
