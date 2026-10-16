@@ -12,12 +12,10 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Tidrapport &amp; utlägg</title>
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" type="image/png" href="icons/favicon-32.png">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="favicon-32.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="stylesheet" href="styles.css">
-<script src="vendor/jszip.min.js" defer></script>
-<script src="vendor/jspdf.umd.min.js" defer></script>
-<script src="vendor/pdf-lib.min.js" defer></script>
+<script src="bibliotek.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
@@ -232,7 +230,7 @@
   <p class="sdstatus" id="sdStatus" role="status" hidden></p>
   <div class="sendopts" id="sdOpts"></div>
   <p class="hint" id="sdHelp"></p>
-  <div class="actions end"><button class="btn" type="button" id="sdClose">Stäng</button></div>
+  <div class="actions end"><span class="hint sdver" id="sdVersion"></span><button class="btn" type="button" id="sdClose">Stäng</button></div>
 </dialog>
 
 <dialog id="imgDialog" aria-label="Kvitto">

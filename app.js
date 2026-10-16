@@ -3,7 +3,7 @@
    Appen gör inga nätverksanrop utöver att läsa sina egna filer (config.json, mallen). */
 "use strict";
 (() => {
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
 const MONTHS = ["Januari","Februari","Mars","April","Maj","Juni","Juli","Augusti","September","Oktober","November","December"];
 const TYPES = ["work","travel","expense","absence"];
 const TYPE_LABEL = {work:"Arbete", travel:"Resa", expense:"Utlägg", absence:"Frånvaro"};
@@ -19,7 +19,7 @@ const MAX_BACKUP_BYTES = 200 * 1024 * 1024;
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 const $ = (id) => document.getElementById(id);
-const S = {cfg:{...DEFAULT_CFG}, profile:null, kFrom:"", kTo:"", ym:null, items:[], months:{}, type:"work",
+const S = {broken: new Set(), cfg:{...DEFAULT_CFG}, profile:null, kFrom:"", kTo:"", ym:null, items:[], months:{}, type:"work",
   editId:null, editItem:null, receipt:undefined, previewUrl:null, installEvt:null};
 
 /* ---------- små hjälpfunktioner ---------- */
@@ -168,6 +168,22 @@ async function getReceipt(id){
   if (r.data instanceof ArrayBuffer) r.blob = new Blob([r.data], {type: r.type || (r.kind === "pdf" ? "application/pdf" : "image/jpeg")});
   return r.blob instanceof Blob ? r : null;
 }
+/* Flyttar äldre kvitton (Blob) till bytes. Ett kvitto vars fil webbläsaren har tappat markeras som oläsbart,
+   så att användaren ser det direkt och kan fotografera kvittot på nytt. */
+async function migrateReceipts(){
+  S.broken = new Set();
+  let all = [];
+  try { all = await DB.all("receipts"); } catch (e) { return; }
+  for (const r of all) {
+    if (r.data instanceof ArrayBuffer && r.data.byteLength) continue;
+    try {
+      if (!(r.blob instanceof Blob)) throw new Error("ingen fil");
+      const data = await r.blob.arrayBuffer();
+      if (!data.byteLength) throw new Error("tom fil");
+      await DB.put("receipts", {id: r.id, kind: r.kind, type: r.type, name: r.name, data, createdAt: r.createdAt});
+    } catch (e) { S.broken.add(r.id); }
+  }
+}
 async function putReceipt(rec){
   const data = await rec.blob.arrayBuffer();
   await DB.put("receipts", {id: rec.id, kind: rec.kind, type: rec.type, name: rec.name, data, createdAt: rec.createdAt});
@@ -179,10 +195,14 @@ async function init(){
   fillSelect($("f-cat"), CATS); fillSelect($("f-kind"), KINDS);
   $("versionInfo").textContent = `Version ${APP_VERSION}. Uppgifterna lämnar bara enheten när du själv skickar ett mejl eller sparar en fil.`;
   bindUI();
+  // Kontrollera att bibliotek.js har laddats – saknas den kan inga bilagor skapas.
+  const missingLibs = [["JSZip", window.JSZip], ["jsPDF", window.jspdf], ["pdf-lib", window.PDFLib]].filter(([, v]) => !v).map(([n]) => n);
+  if (missingLibs.length) showBanner(`Appen är inte fullständigt uppladdad: filen bibliotek.js saknas eller kunde inte laddas (${missingLibs.join(", ")}). Bilagor kan inte skapas förrän administratören har laddat upp alla filer i samma mapp.`);
   if (!("indexedDB" in window)) { showBanner("Webbläsaren saknar lokal lagring. Använd en aktuell version av Safari, Chrome eller Edge."); return; }
   try { await DB.open(); }
   catch (e) { showBanner("Kunde inte öppna den lokala lagringen. Privat surfläge stöds inte – öppna appen i ett vanligt fönster."); return; }
   await loadConfig();
+  await migrateReceipts();
   const stored = (await DB.get("meta", "profile"))?.value;
   S.profile = stored ? sanitizeProfile(stored) : null; // gamla profiler (lonFragor) flyttas till kvitto
   S.ym = ymOf(todayStr());
@@ -206,7 +226,11 @@ const profileComplete = () => !!(S.profile && S.profile.name && isEmail(S.profil
 
 function registerSW(){
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    // När en ny version tar över laddas sidan om en gång, så att användaren direkt kör den nya koden.
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+    navigator.serviceWorker.register("sw.js").then((reg) => reg.update()).catch(() => {});
   }
   window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); S.installEvt = e; $("installBtn").hidden = false; });
 }
@@ -404,7 +428,7 @@ async function saveEntry(){
       if (S.receipt) {
         const rid = newId();
         await putReceipt({id: rid, kind: S.receipt.kind, type: S.receipt.type, name: S.receipt.name, blob: S.receipt.blob, createdAt: now});
-        raw.receiptId = rid;
+        raw.receiptId = rid; if (oldRid) S.broken.delete(oldRid);
         if (oldRid) await DB.del("receipts", oldRid);
       } else if (S.receipt === null && oldRid) { await DB.del("receipts", oldRid); raw.receiptId = null; }
     }
@@ -485,7 +509,9 @@ function entryEl(it){
   } else if (it.type === "expense") {
     main = it.desc || it.category;
     sub = [`${it.category} · moms ${fmtKr(it.vat)} · ${it.payment === "company" ? "företagskort" : "privat"} · `,
-      it.receiptId ? h("button", {class:"btn small", type:"button", dataset:{receipt: it.receiptId}}, "Visa kvitto") : h("span", {class:"missing"}, "kvitto saknas")];
+      !it.receiptId ? h("span", {class:"missing"}, "kvitto saknas")
+        : S.broken.has(it.receiptId) ? h("span", {class:"missing"}, "kvittobilden kan inte läsas – öppna och fotografera igen")
+        : h("button", {class:"btn small", type:"button", dataset:{receipt: it.receiptId}}, "Visa kvitto")];
     val = fmtKr(it.amount);
   } else { main = it.kind; sub = it.desc ? [it.desc] : []; val = fmtH(it.hours); }
   return h("div", {class:"entry", tabindex:"0", role:"button", dataset:{id: it.id}, "aria-label": `Ändra ${TYPE_LABEL[it.type]} ${it.date}`},
@@ -510,18 +536,19 @@ function renderSendStatus(){
 async function openSendDialog(spec){
   const {title, to, subject, emlName} = spec;
   const dlg = $("sendDialog");
-  $("sdTitle").textContent = title;
+  $("sdTitle").textContent = title; $("sdVersion").textContent = `Version ${APP_VERSION}`;
   $("sdTo").replaceChildren(h("span", {class:"addr"}, to.join(", "), h("button", {class:"btn small", type:"button", onclick: () => copyText(to.join(", "))}, "Kopiera")));
   $("sdSubject").textContent = subject;
   $("sdFiles").textContent = "Skapar bilagor…"; $("sdOpts").replaceChildren(); $("sdHelp").textContent = ""; $("sdHelp").classList.remove("manual"); $("sdWarn").hidden = true; $("sdStatus").hidden = true;
   if (!dlg.open) dlg.showModal();
 
   let files;
+  pdfStage = "";
   try { files = await spec.build(); }
   catch (e) {
     console.error("Bilagorna kunde inte skapas", e);
     $("sdFiles").textContent = "Kunde inte skapa bilagorna. Stäng appen helt och öppna den igen. Kvarstår felet, skicka den tekniska informationen nedan till administratören.";
-    $("sdWarn").textContent = `Teknisk information: ${clean(e && e.name, 60)}: ${clean(e && e.message, 200)} (version ${APP_VERSION})`; $("sdWarn").hidden = false;
+    $("sdWarn").textContent = `Teknisk information: ${clean(e && e.name, 60)}: ${clean(e && e.message, 200)} (${pdfStage ? `steg: ${pdfStage}, ` : ""}version ${APP_VERSION})`; $("sdWarn").hidden = false;
     return;
   }
   if (!dlg.open) return;
@@ -844,7 +871,7 @@ function imgSize(src){ return new Promise((res) => { const i = new Image(); i.on
 let logoCache;
 async function getLogo(){
   if (logoCache === undefined) {
-    try { const r = await fetch("icons/logo.png"); const d = await blobToDataUrl(await r.blob()); logoCache = {d, s: await imgSize(d)}; }
+    try { const r = await fetch("logo.png"); const d = await blobToDataUrl(await r.blob()); logoCache = {d, s: await imgSize(d)}; }
     catch (e) { logoCache = null; }
   }
   return logoCache;
@@ -979,7 +1006,9 @@ async function buildLonXlsx(profile, ym, items){
 
 /* Kvittoredovisningens PDF: översikt över alla utlägg i perioden, därefter ett kvitto per sida med
    datum, beskrivning, kategori, belopp inkl. moms, moms i % och kvittobilden. PDF-kvitton läggs in direkt efter sin uppgiftssida. */
+let pdfStage = "";
 async function buildKvittoPdf(profile, from, to, exps){
+  pdfStage = "läser kvitton";
   const priv = r2(exps.filter((e) => e.payment !== "company").reduce((s, e) => s + e.amount, 0));
   const comp = r2(exps.filter((e) => e.payment === "company").reduce((s, e) => s + e.amount, 0));
   const vat = r2(exps.reduce((s, e) => s + e.vat, 0));
@@ -1009,6 +1038,7 @@ async function buildKvittoPdf(profile, from, to, exps){
     recs.push({e, r, kind, src, img});
   }
   const missing = recs.filter((x) => x.kind === "missing").length;
+  pdfStage = "skapar översikt";
   const ctx = await pdfStart("Kvittoredovisning", `${from} – ${to}`, profile, [["Antal kvitton", String(exps.length)], ["Privat betalt, att ersätta", fmtKr(priv)], ["Företagskort", fmtKr(comp)],
     ["Varav moms", fmtKr(vat)], ["Kvitto saknas", String(missing)], ["Totalt inkl. moms", fmtKr(r2(priv + comp))]]);
   const {pdf, W, M} = ctx, C = PDF_C, extra = [], inserts = [];
@@ -1019,6 +1049,7 @@ async function buildKvittoPdf(profile, from, to, exps){
 
   for (let i = 0; i < recs.length; i++) {
     const {e, kind, src, img, r} = recs[i];
+    pdfStage = `kvitto ${i+1}`;
     pdf.addPage(); let y = M;
     pdf.setFont("helvetica", "bold"); pdf.setFontSize(14); pdf.setTextColor(...C.INK); pdf.text(`Kvitto ${i+1} av ${recs.length}`, M, y + 4);
     pdf.setFont("helvetica", "normal"); pdf.setFontSize(9); pdf.setTextColor(...C.MUTED); pdf.text(`${profile.name} · Kvittoredovisning ${from} – ${to}`, W - M, y + 4, {align:"right"});
@@ -1051,7 +1082,9 @@ async function buildKvittoPdf(profile, from, to, exps){
       if (kind === "badpdf" && r) extra.push({name: `Kvitto_${pad(i+1)}_${e.date}_${slug(e.desc)}.pdf`, type:"application/pdf", blob: r.blob});
     }
   }
+  pdfStage = "sparar PDF";
   let bytes = pdf.output("arraybuffer");
+  pdfStage = "lägger in PDF-kvitton";
   if (inserts.length && window.PDFLib) {
     const doc = await PDFLib.PDFDocument.load(bytes);
     let offset = 0;

@@ -105,6 +105,7 @@ dialog::backdrop{background:rgb(0 0 0 / .5)}
 .sendmeta dt{color:var(--muted)}
 .sendmeta dd{margin:0;overflow-wrap:anywhere}
 .sdstatus{margin:0 0 12px;padding:10px 12px;border-radius:6px;background:var(--ok-bg);color:var(--fg);font-size:14px}
+.sdver{margin:0 auto 0 0}
 .sendopts{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
 .sendopts .btn{width:100%}
 #sdHelp.manual{display:flex;flex-direction:column;gap:8px;align-items:flex-start}

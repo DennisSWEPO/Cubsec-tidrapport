@@ -12,7 +12,7 @@ Appen måste ligga på en **https-adress** för att kunna installeras och funger
 
 **Alternativ A – GitHub Pages**
 1. Skapa ett nytt repo på GitHub, t.ex. `tidrapport`. På GitHubs gratisnivå måste repot vara publikt för Pages. Det går bra, eftersom koden inte innehåller några personuppgifter, men lönekontorets e-postadresser i `config.json` blir synliga.
-2. Ladda upp **alla filer och mappar i den här mappen** till repots rot.
+2. Ladda upp **alla filer** i den här mappen till repots rot (*Add file → Upload files*, markera alla filer). Appen har inga undermappar, så inget kan bli kvar. Kontrollera efteråt att `bibliotek.js` finns i repot – utan den kan inga bilagor skapas, och appen visar då en varning överst.
 3. Gå till *Settings → Pages*, välj *Deploy from a branch*, gren `main` och mapp `/ (root)`.
 4. Efter någon minut finns appen på `https://<konto>.github.io/tidrapport/`.
 
@@ -84,9 +84,15 @@ Appen kan inte veta om mejlet faktiskt skickades. Den markerar därför månaden
 
 ## 5. Uppdatera appen
 
-Byt ut filerna och höj `VERSION` i `sw.js` (t.ex. `tidrapport-v1.4.1`). Användarna får den nya versionen inom ett par öppningar med uppkoppling. Ändras bara `config.json` behövs ingen versionshöjning.
+Byt ut filerna och höj `VERSION` i `sw.js` (t.ex. `tidrapport-v1.5.1`). Användarna får den nya versionen inom ett par öppningar med uppkoppling. Ändras bara `config.json` behövs ingen versionshöjning.
 
 Byter ni Excel-mall: ersätt `tidrapport-mall.xlsx` och behåll samma kolumnlayout (C–H, rad 10–40 för dag 1–31), annars behöver koden justeras.
+
+## 5b. Felsökning
+
+* **”Kunde inte skapa bilagorna” eller varningen ”Appen är inte fullständigt uppladdad”**: `bibliotek.js` saknas på webbservern. Ladda upp den (och övriga filer) till samma mapp som `index.html`.
+* **Gammal version visas efter uppdatering**: stäng appen helt och öppna den igen två gånger. Från version 1.5 hämtas appens filer alltid från servern när det finns uppkoppling, och versionsnumret syns i skicka-dialogen och under Inställningar.
+* **”Kvittobilden kan inte läsas”** vid ett utlägg: telefonens webbläsare har tappat bildfilen (kan hända med kvitton sparade i äldre versioner). Öppna utlägget, fotografera kvittot igen och spara.
 
 ## 6. Dataskydd
 
@@ -97,7 +103,7 @@ Byter ni Excel-mall: ersätt `tidrapport-mall.xlsx` och behåll samma kolumnlayo
 * *Inställningar → Radera all data* tar bort allt från enheten, t.ex. när någon slutar.
 * Tidrapporterna hamnar sedan i mejlkorgar. Gallring och lagring av dem följer era vanliga rutiner för löneunderlag.
 
-## 7. Säkerhetsgranskning (version 1.4.0)
+## 7. Säkerhetsgranskning (version 1.5.0)
 
 Det här har gåtts igenom och åtgärdats:
 
@@ -107,7 +113,7 @@ Det här har gåtts igenom och åtgärdats:
 * **Mejlhuvudinjektion**: e-postadresser valideras strikt, radbrytningar och kontrolltecken tas bort, ämnen kodas enligt RFC 2047 och bilagenamn begränsas till A–Z, 0–9, `.`, `_`, `-`.
 * **Import av säkerhetskopia**: varje fält valideras mot vitlistor och intervall. Kvitton kontrolleras med filsignatur (JPEG/PDF) och storleksgräns. Ogiltiga poster hoppas över.
 * **Kvitton**: bilder kodas om till JPEG i appen, vilket tar bort EXIF-data som plats. PDF:er kontrolleras med filsignatur och får vara högst 10 MB.
-* **Beroenden**: jsPDF uppdaterad till 4.2.1, som täpper till kända sårbarheter i 2.x/3.x (bl.a. CVE-2025-29907 och CVE-2025-57810), JSZip 3.10.2 och pdf-lib 1.17.1 (för att lägga in PDF-kvitton i kvittoredovisningen). Alla ligger lokalt i `vendor/`. `npm audit`: 0 sårbarheter. pdf-lib har inte fått nya versioner sedan 2021 men har inga kända sårbarheter. Den läser bara PDF:er som användaren själv valt (högst 10 MB), och misslyckad inläsning leder till att filen bifogas separat.
+* **Beroenden**: jsPDF uppdaterad till 4.2.1, som täpper till kända sårbarheter i 2.x/3.x (bl.a. CVE-2025-29907 och CVE-2025-57810), JSZip 3.10.2 och pdf-lib 1.17.1 (för att lägga in PDF-kvitton i kvittoredovisningen). Alla ligger lokalt i `bibliotek.js`. `npm audit`: 0 sårbarheter. pdf-lib har inte fått nya versioner sedan 2021 men har inga kända sårbarheter. Den läser bara PDF:er som användaren själv valt (högst 10 MB), och misslyckad inläsning leder till att filen bifogas separat.
 * **Uppdelning av uppgifter**: kvittobilder och kvitto-PDF:er följer bara med kvittoredovisningen. Lönekontoret får bara det som ska betalas ut (inga timmar eller frånvaroorsaker), och chefen får inte företagskortsutlägg.
 * **Excel-listan till lönekontoret** byggs med textceller och XML-escaping, så att text inte kan tolkas som formler eller bryta filen.
 * **Service worker**: hanterar bara GET-anrop till samma webbplats. Vid uppdatering hämtas alla filer direkt från servern (inte ur webbläsarens cache), så att gamla och nya filer aldrig blandas.
@@ -120,8 +126,8 @@ Kvarstående att känna till: lokal data är inte krypterad av appen själv utan
 | Fil | Innehåll |
 |---|---|
 | `index.html`, `styles.css`, `app.js` | Själva appen |
-| `sw.js`, `manifest.webmanifest`, `icons/` | Offline och installation |
+| `sw.js`, `manifest.webmanifest`, `*.png` | Offline, installation, ikoner och logotyp |
 | `config.json` | Företagets inställningar (redigeras av administratören) |
 | `tidrapport-mall.xlsx` | Lönekontorets Excel-mall |
-| `vendor/` | JSZip, jsPDF och pdf-lib med licenser |
+| `bibliotek.js`, `LICENSER.md` | JSZip, jsPDF och pdf-lib samt deras licenser |
 | `_headers` | Säkerhetshuvuden (Netlify/Cloudflare Pages) |
