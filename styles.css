@@ -104,6 +104,7 @@ dialog::backdrop{background:rgb(0 0 0 / .5)}
 .sendmeta{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 12px;margin:0 0 14px;font-size:14px}
 .sendmeta dt{color:var(--muted)}
 .sendmeta dd{margin:0;overflow-wrap:anywhere}
+.sdstatus{margin:0 0 12px;padding:10px 12px;border-radius:6px;background:var(--ok-bg);color:var(--fg);font-size:14px}
 .sendopts{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
 .sendopts .btn{width:100%}
 #sdHelp.manual{display:flex;flex-direction:column;gap:8px;align-items:flex-start}

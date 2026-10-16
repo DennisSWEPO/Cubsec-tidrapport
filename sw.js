@@ -1,6 +1,6 @@
 /* Service worker: gör appen tillgänglig offline.
    Höj VERSION vid varje ny utgåva så att användarna får de nya filerna. */
-const VERSION = "tidrapport-v1.2.0";
+const VERSION = "tidrapport-v1.3.0";
 const SHELL = [
   "./",
   "./index.html",

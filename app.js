@@ -3,7 +3,7 @@
    Appen gör inga nätverksanrop utöver att läsa sina egna filer (config.json, mallen). */
 "use strict";
 (() => {
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 const MONTHS = ["Januari","Februari","Mars","April","Maj","Juni","Juli","Augusti","September","Oktober","November","December"];
 const TYPES = ["work","travel","expense","absence"];
 const TYPE_LABEL = {work:"Arbete", travel:"Resa", expense:"Utlägg", absence:"Frånvaro"};
@@ -500,7 +500,7 @@ async function openSendDialog(spec){
   $("sdTitle").textContent = title;
   $("sdTo").replaceChildren(h("span", {class:"addr"}, to.join(", "), h("button", {class:"btn small", type:"button", onclick: () => copyText(to.join(", "))}, "Kopiera")));
   $("sdSubject").textContent = subject;
-  $("sdFiles").textContent = "Skapar bilagor…"; $("sdOpts").replaceChildren(); $("sdHelp").textContent = ""; $("sdHelp").classList.remove("manual"); $("sdWarn").hidden = true;
+  $("sdFiles").textContent = "Skapar bilagor…"; $("sdOpts").replaceChildren(); $("sdHelp").textContent = ""; $("sdHelp").classList.remove("manual"); $("sdWarn").hidden = true; $("sdStatus").hidden = true;
   if (!dlg.open) dlg.showModal();
 
   let files;
@@ -520,15 +520,18 @@ async function openSendDialog(spec){
     else { const pdfs = fileObjs.filter((f) => f.type === "application/pdf"); if (pdfs.length && navigator.canShare({files: pdfs})) shareFiles = pdfs; }
   }
   const touch = window.matchMedia("(pointer: coarse)").matches;
+  const recipients = to.join(", ");
+  const createEml = async () => { downloadBlob(await buildEml({to, subject, body, files}), emlName); await markSent(); };
 
+  // Delning (mobil): mottagaren kopieras först, eftersom delningsmenyn inte kan fylla i Till-fältet.
   const optShare = shareFiles && h("button", {class:"btn " + (touch ? "primary" : ""), type:"button", onclick: async () => {
+    try { navigator.clipboard?.writeText(recipients).catch(() => {}); } catch (e) { /* kopiering är en bekvämlighet */ }
     try { await navigator.share({files: shareFiles, title: subject, text: body}); await markSent(); toast("Markerad som skickad"); }
     catch (e) { if (e && e.name !== "AbortError") toast("Delningen misslyckades. Prova ett annat alternativ."); }
-  }}, "Dela med bilagor (välj e-postappen)");
+  }}, touch ? "Öppna e-post med bilagor" : "Dela med bilagor (välj e-postappen)");
   const optEml = h("button", {class:"btn " + (!touch || !shareFiles ? "primary" : ""), type:"button", onclick: async () => {
-    downloadBlob(await buildEml({to, subject, body, files}), emlName); await markSent();
-    toast("Utkastet är sparat – öppna filen så öppnas mejlet med bilagor");
-  }}, "Skapa mejlutkast med bilagor (Outlook)");
+    await createEml(); toast("Utkastet är sparat – öppna filen så öppnas mejlet med bilagor");
+  }}, spec.auto ? "Skapa mejlet igen (Outlook)" : "Skapa mejlutkast med bilagor (Outlook)");
   const optManual = h("button", {class:"btn", type:"button", onclick: () => {
     $("sdHelp").replaceChildren(
       h("span", null, "1. Spara bilagorna:"),
@@ -537,8 +540,30 @@ async function openSendDialog(spec){
       h("button", {class:"btn small primary", type:"button", onclick: async () => { location.href = mailtoUrl(to, subject, body); await markSent(); }}, "Öppna e-post"));
     $("sdHelp").classList.add("manual");
   }}, "Öppna e-post och bifoga själv");
+  const status = $("sdStatus");
+  status.hidden = true;
+
+  if (spec.auto && touch && shareFiles) {
+    // Mobil: telefonen kräver ett tryck för att öppna delningsmenyn.
+    status.textContent = `PDF:en är klar. Tryck på knappen och välj din e-postapp. Mottagaren (${recipients}) kopieras automatiskt – klistra in den i Till-fältet om den inte redan står där.`;
+    status.hidden = false;
+    $("sdOpts").replaceChildren(optShare, optManual);
+    $("sdHelp").textContent = "";
+    return;
+  }
+  if (spec.auto) {
+    // Dator: mejlet med mottagare och bilaga skapas direkt och öppnas i Outlook.
+    await createEml();
+    status.textContent = "Mejlet med mottagare och PDF skapas och öppnas i Outlook. Kontrollera och tryck Skicka.";
+    status.hidden = false;
+    $("sdOpts").replaceChildren(...[optEml, optShare, optManual].filter(Boolean));
+    $("sdHelp").textContent = "Öppnas inget mejl? Klicka på den hämtade filen (.eml) i webbläsarens nedladdningar. "
+      + "Så öppnas den automatiskt nästa gång: i Chrome eller Edge, klicka på ”…” vid nedladdningen och välj ”Öppna alltid filer av den här typen”. "
+      + "Används inte Outlook: välj ”Öppna e-post och bifoga själv”.";
+    return;
+  }
   $("sdOpts").replaceChildren(...(touch && optShare ? [optShare, optEml, optManual] : [optEml, optShare, optManual]).filter(Boolean));
-  $("sdHelp").textContent = (shareFiles ? "Dela: välj Mail, Outlook eller Gmail och klistra in mottagaren om fältet är tomt. " : "")
+  $("sdHelp").textContent = (shareFiles ? "Dela: mottagaren kopieras automatiskt – klistra in den i Till-fältet om det är tomt. " : "")
     + "Mejlutkast: öppna den sparade .eml-filen, så öppnas ett färdigt mejl i Outlook. Kontrollera och tryck Skicka. "
     + "Fungerar inget av det: välj det sista alternativet och bifoga filerna själv.";
 }
@@ -642,6 +667,7 @@ async function openKvittoSend(){
   const vat = r2(exps.reduce((s, e) => s + e.vat, 0)), missing = exps.filter((e) => !e.receiptId).length;
   openSendDialog({
     title: "Skicka kvittoredovisning",
+    auto: true,
     to: [kvittoMail()],
     subject: `Kvittoredovisning ${from} – ${to} – ${p.name}`,
     emlName: base + ".eml",
@@ -923,43 +949,68 @@ async function buildLonXlsx(profile, ym, items){
   return z.generateAsync({type:"blob", compression:"DEFLATE", mimeType: XLSX_TYPE});
 }
 
-/* Kvittoredovisningens PDF: alla utlägg i perioden och varje kvitto – bilder och uppladdade PDF:er – i en samlad fil. */
+/* Kvittoredovisningens PDF: översikt över alla utlägg i perioden, därefter ett kvitto per sida med
+   datum, beskrivning, kategori, belopp inkl. moms, moms i % och kvittobilden. PDF-kvitton läggs in direkt efter sin uppgiftssida. */
 async function buildKvittoPdf(profile, from, to, exps){
   const priv = r2(exps.filter((e) => e.payment !== "company").reduce((s, e) => s + e.amount, 0));
   const comp = r2(exps.filter((e) => e.payment === "company").reduce((s, e) => s + e.amount, 0));
-  const vat = r2(exps.reduce((s, e) => s + e.vat, 0)), missing = exps.filter((e) => !e.receiptId).length;
-  // Läs in kvittona först, så att sammanställningen kan säga exakt var varje kvitto finns.
+  const vat = r2(exps.reduce((s, e) => s + e.vat, 0));
+  // Läs in kvittona först, så att översikten kan säga exakt hur varje kvitto redovisas.
   const recs = [];
   for (const e of exps) {
     const r = e.receiptId ? await DB.get("receipts", e.receiptId) : null;
-    let src = null;
+    let kind = "missing", src = null, img = null;
     if (r && r.kind === "pdf" && await sniff(r.blob) === "application/pdf") {
-      try { src = await PDFLib.PDFDocument.load(await r.blob.arrayBuffer(), {updateMetadata:false}); if (!src.getPageCount()) src = null; } catch (x) { src = null; }
+      try { src = await PDFLib.PDFDocument.load(await r.blob.arrayBuffer(), {updateMetadata:false}); kind = src.getPageCount() ? "pdf" : "badpdf"; }
+      catch (x) { kind = "badpdf"; }
+    } else if (r && r.kind === "image" && await sniff(r.blob) === "image/jpeg") {
+      const data = await blobToDataUrl(r.blob), sz = await imgSize(data);
+      if (sz) { kind = "image"; img = {data, sz}; }
     }
-    recs.push({e, r: r && (r.kind === "pdf" || await sniff(r.blob) === "image/jpeg") ? r : null, src});
+    recs.push({e, r, kind, src, img});
   }
-  const ctx = await pdfStart("Kvittoredovisning", `${from} – ${to}`, profile, [["Antal utlägg", String(exps.length)], ["Privat betalt, att ersätta", fmtKr(priv)], ["Företagskort", fmtKr(comp)],
-    ["Varav moms", fmtKr(vat)], ["Utan kvitto", String(missing)], ["Totalt", fmtKr(r2(priv + comp))]]);
-  const {pdf, W, M} = ctx, extra = [], inserts = [];
-  const label = (rec, n) => !rec.r ? "saknas" : (rec.r.kind === "pdf" && !rec.src) ? "separat fil" : `bilaga ${n}`;
-  pdfTable(ctx, [{h:"Nr", w:10}, {h:"Datum", w:21}, {h:"Beskrivning", w:55, wrap:1}, {h:"Kategori", w:26, wrap:1}, {h:"Betalt", w:16}, {h:"Kvitto", w:18}, {h:"Moms", w:15, r:1}, {h:"Belopp", w:17, r:1}],
-    recs.map((rec, i) => ({cells: [String(i+1), rec.e.date, rec.e.desc, rec.e.category, rec.e.payment === "company" ? "Ftg-kort" : "Privat", label(rec, i+1), fmtAmt(rec.e.vat), fmtAmt(rec.e.amount)], warn: rec.r ? -1 : 5})));
+  const missing = recs.filter((x) => x.kind === "missing").length;
+  const ctx = await pdfStart("Kvittoredovisning", `${from} – ${to}`, profile, [["Antal kvitton", String(exps.length)], ["Privat betalt, att ersätta", fmtKr(priv)], ["Företagskort", fmtKr(comp)],
+    ["Varav moms", fmtKr(vat)], ["Kvitto saknas", String(missing)], ["Totalt inkl. moms", fmtKr(r2(priv + comp))]]);
+  const {pdf, W, M} = ctx, C = PDF_C, extra = [], inserts = [];
+  const status = {image: "foto", pdf: "PDF", badpdf: "separat fil", missing: "saknas"};
+  pdfTable(ctx, [{h:"Nr", w:9}, {h:"Datum", w:21}, {h:"Beskrivning", w:52, wrap:1}, {h:"Kategori", w:27, wrap:1}, {h:"Betalt", w:16}, {h:"Moms", w:12, r:1}, {h:"Inkl. moms", w:24, r:1}, {h:"Kvitto", w:17}],
+    recs.map((x, i) => ({cells: [String(i+1), x.e.date, x.e.desc, x.e.category, x.e.payment === "company" ? "Ftg-kort" : "Privat", `${x.e.vatRate} %`, fmtAmt(x.e.amount), status[x.kind]], warn: x.kind === "missing" ? 7 : -1})));
   pdfSignatures(ctx, "Attest");
+
   for (let i = 0; i < recs.length; i++) {
-    const {e, r, src} = recs[i]; if (!r) continue;
-    if (r.kind === "pdf" && !src) { extra.push({name: `Kvitto_${pad(i+1)}_${e.date}_${slug(e.desc)}.pdf`, type:"application/pdf", blob: r.blob}); continue; }
-    pdf.addPage();
-    pdf.setFont("helvetica", "bold"); pdf.setFontSize(11); pdf.setTextColor(...PDF_C.INK); pdf.text(`Bilaga ${i+1} – kvitto`, M, M + 2);
-    pdf.setFont("helvetica", "normal"); pdf.setFontSize(9); pdf.setTextColor(...PDF_C.MUTED);
-    pdf.text(pdf.splitTextToSize(`${e.date} · ${e.desc} · ${e.category} · ${fmtKr(e.amount)} · ${profile.name}`, W - 2*M)[0], M, M + 8);
-    if (r.kind === "pdf") {
-      pdf.text(`Kvittot är en PDF på ${src.getPageCount()} ${src.getPageCount() > 1 ? "sidor" : "sida"} och följer efter den här sidan.`, M, M + 16);
+    const {e, kind, src, img, r} = recs[i];
+    pdf.addPage(); let y = M;
+    pdf.setFont("helvetica", "bold"); pdf.setFontSize(14); pdf.setTextColor(...C.INK); pdf.text(`Kvitto ${i+1} av ${recs.length}`, M, y + 4);
+    pdf.setFont("helvetica", "normal"); pdf.setFontSize(9); pdf.setTextColor(...C.MUTED); pdf.text(`${profile.name} · Kvittoredovisning ${from} – ${to}`, W - M, y + 4, {align:"right"});
+    y += 10;
+    // Uppgiftsruta
+    const fields = [["Datum", e.date], ["Kategori", e.category], ["Betalt med", e.payment === "company" ? "Företagskort" : "Privat kort/kontant"],
+      ["Belopp inkl. moms", fmtKr(e.amount)], ["Moms", `${e.vatRate} %  (${fmtKr(e.vat)})`], ["Belopp exkl. moms", fmtKr(r2(e.amount - e.vat))]];
+    const descLines = pdf.splitTextToSize(e.desc || "–", W - 2*M - 8).slice(0, 3);
+    const boxH = 12 + descLines.length * 4.5 + 22;
+    pdf.setFillColor(238, 243, 245); pdf.rect(M, y, W - 2*M, boxH, "F");
+    pdf.setFontSize(8); pdf.setTextColor(...C.MUTED); pdf.text("BESKRIVNING", M + 4, y + 6);
+    pdf.setFontSize(11); pdf.setTextColor(...C.INK); pdf.setFont("helvetica", "bold"); pdf.text(descLines, M + 4, y + 11.5); pdf.setFont("helvetica", "normal");
+    const fy = y + 12 + descLines.length * 4.5 + 3;
+    fields.forEach(([k, v], j) => { const cx = M + 4 + (j % 3) * ((W - 2*M) / 3), cy = fy + Math.floor(j / 3) * 10;
+      pdf.setFontSize(8); pdf.setTextColor(...C.MUTED); pdf.text(k.toUpperCase(), cx, cy);
+      pdf.setFontSize(10.5); pdf.setTextColor(...C.INK); pdf.text(v, cx, cy + 4.5); });
+    y += boxH + 6;
+    const areaH = 297 - M - y;
+    if (kind === "image") {
+      const sc = Math.min((W - 2*M) / img.sz.w, areaH / img.sz.h), w = img.sz.w * sc, hgt = img.sz.h * sc;
+      pdf.addImage(img.data, "JPEG", M + (W - 2*M - w) / 2, y, w, hgt, `kv${i}`, "FAST");
+    } else if (kind === "pdf") {
+      pdf.setFontSize(10); pdf.setTextColor(...C.MUTED);
+      pdf.text(`Kvittot är en PDF-fil på ${src.getPageCount()} ${src.getPageCount() > 1 ? "sidor" : "sida"} och följer direkt efter den här sidan.`, M, y + 4);
       inserts.push({at: pdf.getNumberOfPages(), src});
-      continue;
+    } else {
+      pdf.setDrawColor(...C.WARN); pdf.setLineDashPattern([2, 2], 0); pdf.rect(M, y, W - 2*M, 40); pdf.setLineDashPattern([], 0);
+      pdf.setFontSize(12); pdf.setTextColor(...C.WARN); pdf.setFont("helvetica", "bold");
+      pdf.text(kind === "badpdf" ? "Kvittot bifogas som separat PDF-fil" : "Kvitto saknas", W / 2, y + 22, {align:"center"}); pdf.setFont("helvetica", "normal");
+      if (kind === "badpdf") extra.push({name: `Kvitto_${pad(i+1)}_${e.date}_${slug(e.desc)}.pdf`, type:"application/pdf", blob: r.blob});
     }
-    const data = await blobToDataUrl(r.blob), sz = await imgSize(data); if (!sz) continue;
-    const sc = Math.min((W - 2*M) / sz.w, (297 - 2*M - 16) / sz.h);
-    pdf.addImage(data, "JPEG", M, M + 14, sz.w * sc, sz.h * sc);
   }
   let bytes = pdf.output("arraybuffer");
   if (inserts.length) {

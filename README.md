@@ -57,9 +57,22 @@ Det finns tre knappar. Inga kvitton följer med de två första.
 
 Utlägg betalda med **företagskort** syns bara i kvittoredovisningen, eftersom de inte ska ersättas.
 
-**Kvittoredovisningen** (*Skicka kvittoredovisning*) skickas separat till kvittoredovisningsadressen. Användaren väljer en period (från och med – till och med, förvalt hela den visade månaden), och alla utlägg med **kvittodatum** inom perioden samlas i **en PDF**: först en sammanställning (datum, beskrivning, kategori, betalsätt, moms, belopp, utan kvitto markerade), sedan varje kvitto som bilaga. Både fotograferade kvitton och kvitton som laddats upp som PDF läggs in i samma fil. En PDF som inte går att läsa in, t.ex. en lösenordsskyddad, bifogas som egen fil och markeras ”separat fil”. Appen visar hur många utlägg i perioden som redan har redovisats tidigare.
+**Kvittoredovisningen** (*Skicka kvittoredovisning*) skickas separat till kvittoredovisningsadressen. Användaren väljer en period (från och med – till och med, förvalt hela den visade månaden). Alla utlägg med **kvittodatum** inom perioden samlas i **en PDF**:
 
-Användaren väljer sedan ett av tre sätt att skicka:
+* **Sida 1 – översikt:** alla kvitton i en tabell med datum, beskrivning, kategori, betalsätt, moms i %, belopp inkl. moms och om kvittot finns, plus summor och attestrad.
+* **Därefter ett kvitto per sida:** datum, beskrivning, kategori, betalsätt, belopp inkl. moms, moms i % (och i kronor), belopp exkl. moms och bilden av det fotograferade kvittot.
+* Kvitton som laddats upp som **PDF** får en uppgiftssida, och kvittots egna sidor läggs in direkt efter.
+* Utlägg **utan kvitto** tas med och markeras ”Kvitto saknas”.
+* En PDF som inte går att läsa in (t.ex. lösenordsskyddad) bifogas som egen fil och markeras ”separat fil”.
+
+**Ett klick:** när PDF:en är klar öppnas mejlet direkt:
+
+* **Dator:** appen skapar ett färdigt mejlutkast (.eml) med mottagaren i Till-fältet, ämne, text och PDF:en bifogad, som öppnas i Outlook. **Engångsinställning per dator:** första gången, klicka på ”…” vid nedladdningen i Chrome eller Edge och välj *Öppna alltid filer av den här typen*. Därefter öppnas mejlet automatiskt varje gång. Klassiska Outlook måste vara standardprogram för .eml-filer (det är det normalt när Outlook är installerat). Nya Outlook för Windows hanterar sådana utkast sämre. Då används reservknappen *Öppna e-post och bifoga själv*.
+* **Mobil:** telefonen kräver ett tryck. Knappen *Öppna e-post med bilagor* öppnar delningsmenyn med PDF:en. Mottagaren kopieras automatiskt och klistras in i Till-fältet om e-postappen inte fyller i den.
+
+En webbapp kan av säkerhetsskäl aldrig själv starta e-postprogrammet med en bilaga, så detta är det närmaste helt automatiskt man kommer utan ett installerat program.
+
+För tidrapport och utlägg väljer användaren ett av tre sätt att skicka:
 
 | Sätt | Passar | Vad händer |
 |---|---|---|
@@ -71,7 +84,7 @@ Appen kan inte veta om mejlet faktiskt skickades. Den markerar därför månaden
 
 ## 5. Uppdatera appen
 
-Byt ut filerna och höj `VERSION` i `sw.js` (t.ex. `tidrapport-v1.2.1`). Användarna får den nya versionen inom ett par öppningar med uppkoppling. Ändras bara `config.json` behövs ingen versionshöjning.
+Byt ut filerna och höj `VERSION` i `sw.js` (t.ex. `tidrapport-v1.3.1`). Användarna får den nya versionen inom ett par öppningar med uppkoppling. Ändras bara `config.json` behövs ingen versionshöjning.
 
 Byter ni Excel-mall: ersätt `tidrapport-mall.xlsx` och behåll samma kolumnlayout (C–H, rad 10–40 för dag 1–31), annars behöver koden justeras.
 
@@ -84,7 +97,7 @@ Byter ni Excel-mall: ersätt `tidrapport-mall.xlsx` och behåll samma kolumnlayo
 * *Inställningar → Radera all data* tar bort allt från enheten, t.ex. när någon slutar.
 * Tidrapporterna hamnar sedan i mejlkorgar. Gallring och lagring av dem följer era vanliga rutiner för löneunderlag.
 
-## 7. Säkerhetsgranskning (version 1.2.0)
+## 7. Säkerhetsgranskning (version 1.3.0)
 
 Det här har gåtts igenom och åtgärdats:
 
