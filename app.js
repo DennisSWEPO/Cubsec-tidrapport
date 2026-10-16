@@ -3,7 +3,7 @@
    Appen gör inga nätverksanrop utöver att läsa sina egna filer (config.json, mallen). */
 "use strict";
 (() => {
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.0";
 const MONTHS = ["Januari","Februari","Mars","April","Maj","Juni","Juli","Augusti","September","Oktober","November","December"];
 const TYPES = ["work","travel","expense","absence"];
 const TYPE_LABEL = {work:"Arbete", travel:"Resa", expense:"Utlägg", absence:"Frånvaro"};
@@ -159,6 +159,19 @@ const DB = {
   byMonth(ym){ return this.run("items", "readonly", (t) => t.objectStore("items").index("month").getAll(ym)); },
   wipe(){ return this.run(["items","receipts","meta"], "readwrite", (t) => { ["items","receipts","meta"].forEach((s) => t.objectStore(s).clear()); }); }
 };
+
+/* Kvitton sparas som bytes (ArrayBuffer) – det fungerar stabilt i alla mobilwebbläsare.
+   Äldre kvitton som sparats som Blob läses fortfarande. */
+async function getReceipt(id){
+  const r = await DB.get("receipts", id);
+  if (!r) return null;
+  if (r.data instanceof ArrayBuffer) r.blob = new Blob([r.data], {type: r.type || (r.kind === "pdf" ? "application/pdf" : "image/jpeg")});
+  return r.blob instanceof Blob ? r : null;
+}
+async function putReceipt(rec){
+  const data = await rec.blob.arrayBuffer();
+  await DB.put("receipts", {id: rec.id, kind: rec.kind, type: rec.type, name: rec.name, data, createdAt: rec.createdAt});
+}
 
 /* ---------- start ---------- */
 document.addEventListener("DOMContentLoaded", init);
@@ -354,7 +367,7 @@ function showReceiptPreview(r){
   $("receiptNote").textContent = !r ? "Inget kvitto valt" : r.kind === "pdf" ? `PDF bifogad: ${r.name}` : "Kvitto bifogat";
 }
 async function openReceipt(rid){
-  const r = await DB.get("receipts", rid);
+  const r = await getReceipt(rid);
   if (!r) { toast("Kvittot hittades inte."); return; }
   const url = URL.createObjectURL(r.blob);
   if (r.kind === "pdf") { downloadBlob(r.blob, `Kvitto_${slug(r.name.replace(/\.pdf$/i, ""))}.pdf`); URL.revokeObjectURL(url); return; }
@@ -390,7 +403,7 @@ async function saveEntry(){
       const oldRid = raw.receiptId;
       if (S.receipt) {
         const rid = newId();
-        await DB.put("receipts", {id: rid, kind: S.receipt.kind, type: S.receipt.type, name: S.receipt.name, blob: S.receipt.blob, createdAt: now});
+        await putReceipt({id: rid, kind: S.receipt.kind, type: S.receipt.type, name: S.receipt.name, blob: S.receipt.blob, createdAt: now});
         raw.receiptId = rid;
         if (oldRid) await DB.del("receipts", oldRid);
       } else if (S.receipt === null && oldRid) { await DB.del("receipts", oldRid); raw.receiptId = null; }
@@ -422,7 +435,7 @@ function editEntry(it){
   if (it.type === "travel") { $("f-thours").value = it.travelHours ? fmtN(it.travelHours) : ""; $("f-km").value = it.km ? fmtN(it.km) : ""; $("f-vehicle").value = it.vehicle; }
   if (it.type === "expense") {
     $("f-amount").value = fmtN(it.amount); $("f-vatrate").value = String(it.vatRate); $("f-cat").value = it.category; $("f-pay").value = it.payment;
-    if (it.receiptId) DB.get("receipts", it.receiptId).then((r) => { if (r && S.editId === it.id && S.receipt === undefined) showReceiptPreview(r); });
+    if (it.receiptId) getReceipt(it.receiptId).then((r) => { if (r && S.editId === it.id && S.receipt === undefined) showReceiptPreview(r); });
   }
   if (it.type === "absence") { $("f-kind").value = it.kind; $("f-ahours").value = fmtN(it.hours); }
   $("formTitle").textContent = "Ändra registrering"; $("saveBtn").textContent = "Spara ändring";
@@ -505,7 +518,12 @@ async function openSendDialog(spec){
 
   let files;
   try { files = await spec.build(); }
-  catch (e) { $("sdFiles").textContent = "Kunde inte skapa bilagorna. Ladda om appen och försök igen."; return; }
+  catch (e) {
+    console.error("Bilagorna kunde inte skapas", e);
+    $("sdFiles").textContent = "Kunde inte skapa bilagorna. Stäng appen helt och öppna den igen. Kvarstår felet, skicka den tekniska informationen nedan till administratören.";
+    $("sdWarn").textContent = `Teknisk information: ${clean(e && e.name, 60)}: ${clean(e && e.message, 200)} (version ${APP_VERSION})`; $("sdWarn").hidden = false;
+    return;
+  }
   if (!dlg.open) return;
   const total = files.reduce((s, f) => s + f.blob.size, 0);
   $("sdFiles").textContent = files.map((f) => f.name).join(", ") + ` (${fmtN(total/1048576, 1)} MB)`;
@@ -544,8 +562,16 @@ async function openSendDialog(spec){
   status.hidden = true;
 
   if (spec.auto && touch && shareFiles) {
-    // Mobil: telefonen kräver ett tryck för att öppna delningsmenyn.
-    status.textContent = `PDF:en är klar. Tryck på knappen och välj din e-postapp. Mottagaren (${recipients}) kopieras automatiskt – klistra in den i Till-fältet om den inte redan står där.`;
+    // Mobil: öppna delningsmenyn direkt med PDF, ämne och text. Mottagaren kopierades redan vid klicket.
+    try {
+      await navigator.share({files: shareFiles, title: subject, text: body});
+      await markSent(); dlg.close(); toast("Kvittoredovisningen är överlämnad till e-postappen");
+      return;
+    } catch (e) {
+      if (e && e.name === "AbortError") { status.textContent = "Delningen avbröts. Tryck på knappen för att försöka igen."; }
+      else { status.textContent = "PDF:en är klar. Tryck på knappen och välj Outlook."; }
+    }
+    status.textContent += ` Mottagaren (${recipients}) är kopierad – tryck länge i Till-fältet och välj Klistra in.`;
     status.hidden = false;
     $("sdOpts").replaceChildren(optShare, optManual);
     $("sdHelp").textContent = "";
@@ -657,6 +683,8 @@ async function renderKvitto(){
   else { st.textContent = "Ingen kvittoredovisning skickad ännu"; st.className = "sendstatus"; }
 }
 async function openKvittoSend(){
+  // Kopiera mottagaren direkt vid klicket (kräver att användaren just har tryckt), så att den kan klistras in i e-postappen.
+  try { if (kvittoMail()) navigator.clipboard?.writeText(kvittoMail()).catch(() => {}); } catch (e) { /* bekvämlighet */ }
   if (!profileComplete()) { toast("Fyll i dina uppgifter först."); openSettings(); return; }
   if (!validPeriod()) { toast("Välj ett giltigt datumintervall."); return; }
   const from = S.kFrom, to = S.kTo, p = S.profile, exps = await kvittoExpenses();
@@ -830,7 +858,7 @@ async function pdfStart(title, subtitle, profile, summary){
   ctx.pageBreak = (need) => { if (ctx.y + need > 297 - M) { pdf.addPage(); ctx.y = M; return true; } return false; };
   ctx.sect = (t) => { ctx.y += 8; ctx.pageBreak(20); pdf.setFont("helvetica", "bold"); pdf.setFontSize(11); pdf.setTextColor(...C.INK); pdf.text(t, M, ctx.y); pdf.setFont("helvetica", "normal"); ctx.y += 6; pdf.setFontSize(8.5); };
   const logo = await getLogo();
-  if (logo && logo.s) pdf.addImage(logo.d, "PNG", W - M - 38, M - 4, 38, 38 * logo.s.h / logo.s.w, "logo", "FAST");
+  try { if (logo && logo.s) pdf.addImage(logo.d, "PNG", W - M - 38, M - 4, 38, 38 * logo.s.h / logo.s.w, "logo", "FAST"); } catch (x) { /* logotypen är valfri */ }
   pdf.setFont("helvetica", "bold"); pdf.setFontSize(18); pdf.setTextColor(...C.INK); pdf.text(title, M, ctx.y + 4);
   pdf.setFontSize(11); pdf.setFont("helvetica", "normal"); pdf.setTextColor(...C.MUTED);
   pdf.text([subtitle, S.cfg.foretag].filter(Boolean).join("  ·  "), M, ctx.y + 11);
@@ -958,14 +986,25 @@ async function buildKvittoPdf(profile, from, to, exps){
   // Läs in kvittona först, så att översikten kan säga exakt hur varje kvitto redovisas.
   const recs = [];
   for (const e of exps) {
-    const r = e.receiptId ? await DB.get("receipts", e.receiptId) : null;
-    let kind = "missing", src = null, img = null;
-    if (r && r.kind === "pdf" && await sniff(r.blob) === "application/pdf") {
-      try { src = await PDFLib.PDFDocument.load(await r.blob.arrayBuffer(), {updateMetadata:false}); kind = src.getPageCount() ? "pdf" : "badpdf"; }
-      catch (x) { kind = "badpdf"; }
-    } else if (r && r.kind === "image" && await sniff(r.blob) === "image/jpeg") {
-      const data = await blobToDataUrl(r.blob), sz = await imgSize(data);
-      if (sz) { kind = "image"; img = {data, sz}; }
+    // Ett kvitto som inte går att läsa får aldrig stoppa hela redovisningen – det markeras i stället.
+    let r = null, kind = "missing", src = null, img = null;
+    if (e.receiptId) {
+      try {
+        r = await getReceipt(e.receiptId);
+        if (!r) kind = "missing";
+        else if (r.kind === "pdf") {
+          kind = "badpdf";
+          if (window.PDFLib && await sniff(r.blob) === "application/pdf") {
+            try { src = await PDFLib.PDFDocument.load(await r.blob.arrayBuffer(), {updateMetadata:false}); if (src.getPageCount()) kind = "pdf"; } catch (x) { src = null; }
+          }
+        } else {
+          kind = "error";
+          // Bilder som inte redan är JPEG kodas om, så att PDF:en alltid kan bädda in dem.
+          const jpeg = await sniff(r.blob) === "image/jpeg" ? r.blob : await compressImage(r.blob);
+          const data = await blobToDataUrl(jpeg), sz = await imgSize(data);
+          if (sz && data.startsWith("data:image/jpeg")) { kind = "image"; img = {data, sz}; }
+        }
+      } catch (x) { console.warn("Kvitto kunde inte läsas", e.id, x); kind = "error"; }
     }
     recs.push({e, r, kind, src, img});
   }
@@ -973,9 +1012,9 @@ async function buildKvittoPdf(profile, from, to, exps){
   const ctx = await pdfStart("Kvittoredovisning", `${from} – ${to}`, profile, [["Antal kvitton", String(exps.length)], ["Privat betalt, att ersätta", fmtKr(priv)], ["Företagskort", fmtKr(comp)],
     ["Varav moms", fmtKr(vat)], ["Kvitto saknas", String(missing)], ["Totalt inkl. moms", fmtKr(r2(priv + comp))]]);
   const {pdf, W, M} = ctx, C = PDF_C, extra = [], inserts = [];
-  const status = {image: "foto", pdf: "PDF", badpdf: "separat fil", missing: "saknas"};
+  const status = {image: "foto", pdf: "PDF", badpdf: "separat fil", missing: "saknas", error: "ej läsbart"};
   pdfTable(ctx, [{h:"Nr", w:9}, {h:"Datum", w:21}, {h:"Beskrivning", w:52, wrap:1}, {h:"Kategori", w:27, wrap:1}, {h:"Betalt", w:16}, {h:"Moms", w:12, r:1}, {h:"Inkl. moms", w:24, r:1}, {h:"Kvitto", w:17}],
-    recs.map((x, i) => ({cells: [String(i+1), x.e.date, x.e.desc, x.e.category, x.e.payment === "company" ? "Ftg-kort" : "Privat", `${x.e.vatRate} %`, fmtAmt(x.e.amount), status[x.kind]], warn: x.kind === "missing" ? 7 : -1})));
+    recs.map((x, i) => ({cells: [String(i+1), x.e.date, x.e.desc, x.e.category, x.e.payment === "company" ? "Ftg-kort" : "Privat", `${x.e.vatRate} %`, fmtAmt(x.e.amount), status[x.kind]], warn: (x.kind === "missing" || x.kind === "error") ? 7 : -1})));
   pdfSignatures(ctx, "Attest");
 
   for (let i = 0; i < recs.length; i++) {
@@ -1008,12 +1047,12 @@ async function buildKvittoPdf(profile, from, to, exps){
     } else {
       pdf.setDrawColor(...C.WARN); pdf.setLineDashPattern([2, 2], 0); pdf.rect(M, y, W - 2*M, 40); pdf.setLineDashPattern([], 0);
       pdf.setFontSize(12); pdf.setTextColor(...C.WARN); pdf.setFont("helvetica", "bold");
-      pdf.text(kind === "badpdf" ? "Kvittot bifogas som separat PDF-fil" : "Kvitto saknas", W / 2, y + 22, {align:"center"}); pdf.setFont("helvetica", "normal");
-      if (kind === "badpdf") extra.push({name: `Kvitto_${pad(i+1)}_${e.date}_${slug(e.desc)}.pdf`, type:"application/pdf", blob: r.blob});
+      pdf.text({badpdf: "Kvittot bifogas som separat PDF-fil", error: "Kvittobilden kunde inte läsas – fotografera kvittot på nytt", missing: "Kvitto saknas"}[kind], W / 2, y + 22, {align:"center"}); pdf.setFont("helvetica", "normal");
+      if (kind === "badpdf" && r) extra.push({name: `Kvitto_${pad(i+1)}_${e.date}_${slug(e.desc)}.pdf`, type:"application/pdf", blob: r.blob});
     }
   }
   let bytes = pdf.output("arraybuffer");
-  if (inserts.length) {
+  if (inserts.length && window.PDFLib) {
     const doc = await PDFLib.PDFDocument.load(bytes);
     let offset = 0;
     for (const ins of inserts) {
@@ -1031,7 +1070,7 @@ async function saveBackup(){
   try {
     const [items, receipts, meta] = await Promise.all([DB.all("items"), DB.all("receipts"), DB.all("meta")]);
     const rec = [];
-    for (const r of receipts) rec.push({id:r.id, kind:r.kind, name:r.name, createdAt:r.createdAt, data: (await blobB64(r.blob)).replace(/\r\n/g, "")});
+    for (const raw of receipts) { const r = await getReceipt(raw.id); if (r) rec.push({id:r.id, kind:r.kind, name:r.name, createdAt:r.createdAt, data: (await blobB64(r.blob)).replace(/\r\n/g, "")}); }
     const data = {app:"tidrapport", format:1, exportedAt: new Date().toISOString(),
       profile: S.profile, items, receipts: rec, months: meta.filter((m) => /^month:\d{4}-\d{2}$/.test(m.key)), kvittoSent: meta.find((m) => m.key === "kvittoSent")?.value || null};
     downloadBlob(new Blob([JSON.stringify(data)], {type:"application/json"}), `Tidrapport_sakerhetskopia_${todayStr()}.json`);
@@ -1059,7 +1098,7 @@ async function restoreBackup(e){
       const type = r.kind === "pdf" ? "application/pdf" : "image/jpeg";
       const blob = b64ToBlob(r.data, type);
       if (!blob || blob.size > MAX_RECEIPT_BYTES || await sniff(blob) !== type) { skipped++; continue; }
-      await DB.put("receipts", {id:r.id, kind:r.kind, type, name: clean(r.name, 80) || "kvitto", blob, createdAt: num(r.createdAt, 0, 1e14) ?? Date.now()});
+      await putReceipt({id:r.id, kind:r.kind, type, name: clean(r.name, 80) || "kvitto", blob, createdAt: num(r.createdAt, 0, 1e14) ?? Date.now()});
       recIds.add(r.id);
     }
     for (const raw of data.items) {

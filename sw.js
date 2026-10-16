@@ -1,6 +1,6 @@
 /* Service worker: gör appen tillgänglig offline.
    Höj VERSION vid varje ny utgåva så att användarna får de nya filerna. */
-const VERSION = "tidrapport-v1.3.0";
+const VERSION = "tidrapport-v1.4.0";
 const SHELL = [
   "./",
   "./index.html",
@@ -20,7 +20,8 @@ const SHELL = [
 ];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: "reload" hämtar filerna direkt från servern, så att en ny version aldrig blandas med gamla filer ur webbläsarens cache.
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, {cache: "reload"})))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (e) => {

@@ -68,7 +68,7 @@ Utlägg betalda med **företagskort** syns bara i kvittoredovisningen, eftersom 
 **Ett klick:** när PDF:en är klar öppnas mejlet direkt:
 
 * **Dator:** appen skapar ett färdigt mejlutkast (.eml) med mottagaren i Till-fältet, ämne, text och PDF:en bifogad, som öppnas i Outlook. **Engångsinställning per dator:** första gången, klicka på ”…” vid nedladdningen i Chrome eller Edge och välj *Öppna alltid filer av den här typen*. Därefter öppnas mejlet automatiskt varje gång. Klassiska Outlook måste vara standardprogram för .eml-filer (det är det normalt när Outlook är installerat). Nya Outlook för Windows hanterar sådana utkast sämre. Då används reservknappen *Öppna e-post och bifoga själv*.
-* **Mobil:** telefonen kräver ett tryck. Knappen *Öppna e-post med bilagor* öppnar delningsmenyn med PDF:en. Mottagaren kopieras automatiskt och klistras in i Till-fältet om e-postappen inte fyller i den.
+* **Mobil (Android/iPhone):** ett tryck på *Skicka kvittoredovisning* skapar PDF:en och öppnar telefonens delningsmeny direkt. Välj **Outlook**: mejlet öppnas med ämnesraden, texten och PDF:en bifogad. Mottagarens adress kopieras automatiskt vid trycket. Tryck länge i Till-fältet och välj *Klistra in* (Outlook föreslår också adressen efter första gången). En webbapp kan inte själv fylla i Till-fältet samtidigt som den bifogar en fil i mobilen. Det kräver en installerad app (APK).
 
 En webbapp kan av säkerhetsskäl aldrig själv starta e-postprogrammet med en bilaga, så detta är det närmaste helt automatiskt man kommer utan ett installerat program.
 
@@ -84,7 +84,7 @@ Appen kan inte veta om mejlet faktiskt skickades. Den markerar därför månaden
 
 ## 5. Uppdatera appen
 
-Byt ut filerna och höj `VERSION` i `sw.js` (t.ex. `tidrapport-v1.3.1`). Användarna får den nya versionen inom ett par öppningar med uppkoppling. Ändras bara `config.json` behövs ingen versionshöjning.
+Byt ut filerna och höj `VERSION` i `sw.js` (t.ex. `tidrapport-v1.4.1`). Användarna får den nya versionen inom ett par öppningar med uppkoppling. Ändras bara `config.json` behövs ingen versionshöjning.
 
 Byter ni Excel-mall: ersätt `tidrapport-mall.xlsx` och behåll samma kolumnlayout (C–H, rad 10–40 för dag 1–31), annars behöver koden justeras.
 
@@ -97,7 +97,7 @@ Byter ni Excel-mall: ersätt `tidrapport-mall.xlsx` och behåll samma kolumnlayo
 * *Inställningar → Radera all data* tar bort allt från enheten, t.ex. när någon slutar.
 * Tidrapporterna hamnar sedan i mejlkorgar. Gallring och lagring av dem följer era vanliga rutiner för löneunderlag.
 
-## 7. Säkerhetsgranskning (version 1.3.0)
+## 7. Säkerhetsgranskning (version 1.4.0)
 
 Det här har gåtts igenom och åtgärdats:
 
@@ -110,7 +110,8 @@ Det här har gåtts igenom och åtgärdats:
 * **Beroenden**: jsPDF uppdaterad till 4.2.1, som täpper till kända sårbarheter i 2.x/3.x (bl.a. CVE-2025-29907 och CVE-2025-57810), JSZip 3.10.2 och pdf-lib 1.17.1 (för att lägga in PDF-kvitton i kvittoredovisningen). Alla ligger lokalt i `vendor/`. `npm audit`: 0 sårbarheter. pdf-lib har inte fått nya versioner sedan 2021 men har inga kända sårbarheter. Den läser bara PDF:er som användaren själv valt (högst 10 MB), och misslyckad inläsning leder till att filen bifogas separat.
 * **Uppdelning av uppgifter**: kvittobilder och kvitto-PDF:er följer bara med kvittoredovisningen. Lönekontoret får bara det som ska betalas ut (inga timmar eller frånvaroorsaker), och chefen får inte företagskortsutlägg.
 * **Excel-listan till lönekontoret** byggs med textceller och XML-escaping, så att text inte kan tolkas som formler eller bryta filen.
-* **Service worker**: hanterar bara GET-anrop till samma webbplats.
+* **Service worker**: hanterar bara GET-anrop till samma webbplats. Vid uppdatering hämtas alla filer direkt från servern (inte ur webbläsarens cache), så att gamla och nya filer aldrig blandas.
+* **Robusthet**: kvitton sparas som bytes, vilket fungerar stabilt i alla mobilwebbläsare. Ett kvitto som inte går att läsa markeras ”ej läsbart” i stället för att stoppa hela redovisningen. Om något ändå fel visas teknisk information i dialogen.
 
 Kvarstående att känna till: lokal data är inte krypterad av appen själv utan skyddas av enhetens lås. Den som har tillgång till en olåst enhet kan läsa registreringarna.
 
